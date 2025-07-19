@@ -40,6 +40,9 @@ app.use(helmet({
         "https://cloud.appwrite.io",
         "https://www.google-analytics.com",
         "https://moviefrost.com",
+        "https://www.moviefrost.com",
+        "https://moviefrost-backend.vercel.app",
+        "https://moviefrost-frontend.vercel.app",
         "wss://moviefrost.com"
       ],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
@@ -69,16 +72,19 @@ app.use(compression({
   }
 }));
 
-// CORS configuration
+// CORS configuration - Updated for Vercel deployment
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
       'http://localhost:3000',
       'http://localhost:5000',
       'https://moviefrost.com',
-      'https://www.moviefrost.com'
+      'https://www.moviefrost.com',
+      'https://moviefrost-frontend.vercel.app',
+      'https://moviefrost-backend.vercel.app'
     ];
     
+    // Allow requests with no origin (like mobile apps)
     if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
@@ -93,6 +99,9 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+
+// Trust proxy - Important for Vercel
+app.set('trust proxy', 1);
 
 // Cache control for static assets
 app.use((req, res, next) => {
@@ -115,24 +124,20 @@ app.use('/api/movies', moviesRouter);
 app.use('/api/categories', categoriesRouter);
 app.use('/api/upload', Uploadrouter);
 
-// Serve static files in production
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/build')));
-  
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
-  });
-}
-
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ message: 'MovieFrost API is running', version: '1.0.0' });
+});
+
 // Sitemap route
 app.get('/sitemap.xml', async (req, res) => {
   try {
-    const response = await fetch(`${process.env.API_URL || 'http://localhost:5000'}/api/movies/sitemap.xml`);
+    const response = await fetch(`${process.env.API_URL || 'https://moviefrost-backend.vercel.app'}/api/movies/sitemap.xml`);
     const sitemap = await response.text();
     res.header('Content-Type', 'application/xml');
     res.send(sitemap);
@@ -144,21 +149,28 @@ app.get('/sitemap.xml', async (req, res) => {
 // Error handling
 app.use(errorHandler);
 
-// Socket.io setup
-const httpServer = createServer(app);
-const io = new SocketServer(httpServer, {
-  cors: corsOptions,
-  transports: ['websocket', 'polling'],
-});
-
-io.on('connection', (socket) => {
-  console.log(`Socket connected: ${socket.id}`);
-  socket.on('disconnect', () => {
-    console.log(`Socket disconnected: ${socket.id}`);
+// For Vercel deployment, we don't need to create HTTP server or listen
+// Vercel handles this automatically
+if (process.env.NODE_ENV !== 'production') {
+  // Socket.io setup for local development only
+  const httpServer = createServer(app);
+  const io = new SocketServer(httpServer, {
+    cors: corsOptions,
+    transports: ['websocket', 'polling'],
   });
-});
 
-const PORT = process.env.PORT || 5000;
-httpServer.listen(PORT, () => {
-  console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
-});
+  io.on('connection', (socket) => {
+    console.log(`Socket connected: ${socket.id}`);
+    socket.on('disconnect', () => {
+      console.log(`Socket disconnected: ${socket.id}`);
+    });
+  });
+
+  const PORT = process.env.PORT || 5000;
+  httpServer.listen(PORT, () => {
+    console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+  });
+}
+
+// Export for Vercel
+export default app;

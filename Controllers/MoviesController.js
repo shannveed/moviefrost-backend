@@ -382,7 +382,7 @@ const adminReplyReview = asyncHandler(async (req, res) => {
   }
 });
 
-// NEW: Generate sitemap
+// Generate sitemap
 const generateSitemap = asyncHandler(async (req, res) => {
   try {
     const movies = await Movie.find({}).select('_id name updatedAt');
@@ -391,7 +391,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
     let sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n';
     sitemap += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
     
-    // Static pages
+    // Static pages - Updated to use actual domain
     const staticPages = [
       { url: 'https://moviefrost.com/', priority: '1.0', changefreq: 'daily' },
       { url: 'https://moviefrost.com/movies', priority: '0.9', changefreq: 'daily' },
