@@ -72,7 +72,7 @@ app.use(compression({
   }
 }));
 
-// CORS configuration - Updated for Vercel deployment
+// Update the corsOptions in your server.js
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
@@ -84,7 +84,7 @@ const corsOptions = {
       'https://moviefrost-frontend-*.vercel.app'
     ];
     
-     // Allow requests with no origin (like mobile apps)
+    // Allow requests with no origin (like mobile apps)
     if (!origin) {
       return callback(null, true);
     }
@@ -108,6 +108,7 @@ const corsOptions = {
   exposedHeaders: ['Content-Length', 'X-Content-Type-Options'],
   optionsSuccessStatus: 200
 };
+
 
 app.use(cors(corsOptions));
 
