@@ -81,11 +81,22 @@ const corsOptions = {
       'https://moviefrost.com',
       'https://www.moviefrost.com',
       'https://moviefrost-frontend.vercel.app',
-      'https://moviefrost-backend.vercel.app'
+      'https://moviefrost-frontend-*.vercel.app'
     ];
     
-    // Allow requests with no origin (like mobile apps)
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+     // Allow requests with no origin (like mobile apps)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    // Check if the origin is allowed
+    if (allowedOrigins.some(allowedOrigin => {
+      if (allowedOrigin.includes('*')) {
+        const regex = new RegExp(allowedOrigin.replace('*', '.*'));
+        return regex.test(origin);
+      }
+      return allowedOrigin === origin;
+    })) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
