@@ -19,7 +19,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Enhanced security headers
+// Enhanced security headers - Updated to allow PopAds
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -31,7 +31,12 @@ app.use(helmet({
         "https://www.googletagmanager.com",
         "https://www.google-analytics.com",
         "https://cloud.appwrite.io",
-        "https://apis.google.com"
+        "https://apis.google.com",
+        "https://c1.popads.net",
+        "https://cdn.monetag.com",
+        "https://pl27041508.profitableratecpm.com",
+        "https://pl27010677.profitableratecpm.com",
+        "https://pl27010453.profitableratecpm.com"
       ],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       imgSrc: ["'self'", "data:", "https:", "blob:"],
@@ -43,12 +48,14 @@ app.use(helmet({
         "https://www.moviefrost.com",
         "https://moviefrost-backend.vercel.app",
         "https://moviefrost-frontend.vercel.app",
+        "https://c1.popads.net",
+        "https://cdn.monetag.com",
         "wss://moviefrost.com"
       ],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'", "https:", "blob:"],
-      frameSrc: ["'self'", "https:"],
+      frameSrc: ["'self'", "https:", "https://a.monetag.com"],
     },
   },
   hsts: {
