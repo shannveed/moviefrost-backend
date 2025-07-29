@@ -19,7 +19,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Enhanced security headers - Updated to allow PopAds and Monetag
+// Enhanced security headers - Updated to allow PopAds, Monetag, and GA4 regional endpoints
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -45,6 +45,10 @@ app.use(helmet({
         "'self'",
         "https://cloud.appwrite.io",
         "https://www.google-analytics.com",
+        "https://region1.google-analytics.com", // Added for EU GA4
+        "https://region2.google-analytics.com", // Added for other regions
+        "https://region3.google-analytics.com", // Added for other regions
+        "https://region4.google-analytics.com", // Added for other regions
         "https://moviefrost.com",
         "https://www.moviefrost.com",
         "https://moviefrost-backend.vercel.app",
@@ -68,7 +72,6 @@ app.use(helmet({
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   crossOriginEmbedderPolicy: false,
 }));
-
 
 // Compression with optimized settings
 app.use(compression({
@@ -118,7 +121,6 @@ const corsOptions = {
   exposedHeaders: ['Content-Length', 'X-Content-Type-Options'],
   optionsSuccessStatus: 200
 };
-
 
 app.use(cors(corsOptions));
 
