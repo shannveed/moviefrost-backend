@@ -28,8 +28,7 @@ const getMovies = asyncHandler(async (req, res) => {
     const skip = (page - 1) * limit;
 
     const movies = await Movie.find(query)
-      // latest -> first, previousHit -> last, then newest first
-      .sort({ latest: -1, previousHit: 1, createdAt: -1 })
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .select('-reviews'); // Exclude reviews for list view
@@ -157,8 +156,6 @@ const updateMovie = asyncHandler(async (req, res) => {
       seoTitle,
       seoDescription,
       seoKeywords,
-      latest,
-      previousHit,
     } = req.body;
 
     const movie = await Movie.findById(req.params.id);
@@ -185,14 +182,6 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.seoTitle = seoTitle || movie.seoTitle;
     movie.seoDescription = seoDescription || movie.seoDescription;
     movie.seoKeywords = seoKeywords || movie.seoKeywords;
-    
-    // ordering flags (again never both true)
-    if (latest !== undefined) movie.latest = latest;
-    if (previousHit !== undefined) movie.previousHit = previousHit;
-    if (movie.latest && movie.previousHit) {
-      res.status(400);
-      throw new Error('A movie cannot be both Latest and Previous-Hit');
-    }
 
     if (type === 'Movie') {
       movie.video = video || movie.video;
@@ -266,15 +255,7 @@ const createMovie = asyncHandler(async (req, res) => {
       seoTitle,
       seoDescription,
       seoKeywords,
-      latest,
-      previousHit,
     } = req.body;
-
-    // a movie can NOT be both latest and previousHit
-    if (latest && previousHit) {
-      res.status(400);
-      throw new Error('A movie cannot be both Latest and Previous-Hit');
-    }
 
      if (!type || !name || !desc || !image || !titleImage || !category || !browseBy || !time || !language || !year) {
          res.status(400);
@@ -301,8 +282,6 @@ const createMovie = asyncHandler(async (req, res) => {
       seoDescription: seoDescription || desc.substring(0, 155),
       seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
       viewCount: 0,
-      latest: !!latest,
-      previousHit: !!previousHit,
     };
 
     if (type === 'Movie') {
