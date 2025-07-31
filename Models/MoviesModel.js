@@ -139,6 +139,15 @@ const moviesSchema = mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // NEW FLAGS
+    latest: {
+      type: Boolean,
+      default: false,
+    },
+    previousHit: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,
@@ -159,7 +168,6 @@ moviesSchema.index({ category: 1, createdAt: -1 });
 moviesSchema.index({ browseBy: 1, createdAt: -1 });
 moviesSchema.index({ rate: -1 });
 moviesSchema.index({ viewCount: -1 });
+moviesSchema.index({ latest: -1, previousHit: 1, createdAt: -1 });
 
 export default mongoose.model('Movie', moviesSchema);
-
-

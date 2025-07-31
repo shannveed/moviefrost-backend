@@ -27,8 +27,11 @@ const getMovies = asyncHandler(async (req, res) => {
     const limit = 50;
     const skip = (page - 1) * limit;
 
+    // IMPORTANT: order - latest first, previousHit last
+    const sortOrder = { latest: -1, previousHit: 1, createdAt: -1 };
+
     const movies = await Movie.find(query)
-      .sort({ createdAt: -1 })
+      .sort(sortOrder)
       .skip(skip)
       .limit(limit)
       .select('-reviews'); // Exclude reviews for list view
@@ -156,6 +159,8 @@ const updateMovie = asyncHandler(async (req, res) => {
       seoTitle,
       seoDescription,
       seoKeywords,
+      latest,
+      previousHit,
     } = req.body;
 
     const movie = await Movie.findById(req.params.id);
@@ -163,6 +168,11 @@ const updateMovie = asyncHandler(async (req, res) => {
     if (!movie) {
       res.status(404);
       throw new Error('Movie not found');
+    }
+
+    if (latest !== undefined && previousHit !== undefined && latest && previousHit) {
+      res.status(400);
+      throw new Error('Movie cannot be both Latest and PreviousHit');
     }
 
     movie.type = type || movie.type;
@@ -182,6 +192,8 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.seoTitle = seoTitle || movie.seoTitle;
     movie.seoDescription = seoDescription || movie.seoDescription;
     movie.seoKeywords = seoKeywords || movie.seoKeywords;
+    movie.latest = latest !== undefined ? !!latest : movie.latest;
+    movie.previousHit = previousHit !== undefined ? !!previousHit : movie.previousHit;
 
     if (type === 'Movie') {
       movie.video = video || movie.video;
@@ -255,12 +267,19 @@ const createMovie = asyncHandler(async (req, res) => {
       seoTitle,
       seoDescription,
       seoKeywords,
+      latest = false,
+      previousHit = false,
     } = req.body;
 
-     if (!type || !name || !desc || !image || !titleImage || !category || !browseBy || !time || !language || !year) {
-         res.status(400);
-         throw new Error('Missing required fields');
-     }
+    if (!type || !name || !desc || !image || !titleImage || !category || !browseBy || !time || !language || !year) {
+      res.status(400);
+      throw new Error('Missing required fields');
+    }
+
+    if (latest && previousHit) {
+      res.status(400);
+      throw new Error('Movie cannot be both Latest and PreviousHit');
+    }
 
     const movieData = {
       type,
@@ -282,6 +301,8 @@ const createMovie = asyncHandler(async (req, res) => {
       seoDescription: seoDescription || desc.substring(0, 155),
       seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
       viewCount: 0,
+      latest: !!latest,
+      previousHit: !!previousHit,
     };
 
     if (type === 'Movie') {
