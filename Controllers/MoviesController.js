@@ -1,5 +1,6 @@
 import { MoviesData } from '../Data/MoviesData.js';
 import Movie from '../Models/MoviesModel.js';
+import Categories from '../Models/CategoriesModel.js';
 import asyncHandler from 'express-async-handler';
 
 // ************ PUBLIC CONTROLLERS ************
@@ -13,7 +14,7 @@ const getMovies = asyncHandler(async (req, res) => {
   try {
     const { category, time, language, rate, year, search, browseBy } = req.query;
 
-    let query = {
+    let baseFilter = {
       ...(category && { category }),
       ...(time && { time }),
       ...(language && { language }),
@@ -27,22 +28,56 @@ const getMovies = asyncHandler(async (req, res) => {
     const limit = 50;
     const skip = (page - 1) * limit;
 
-    // IMPORTANT: order - latest first, previousHit last
-    const sortOrder = { latest: -1, previousHit: 1, createdAt: -1 };
+    // Split into two buckets
+    const normalFilter = { ...baseFilter, previousHit: { $ne: true } };
+    const prevHitFilter = { ...baseFilter, previousHit: true };
 
-    const movies = await Movie.find(query)
-      .sort(sortOrder)
-      .skip(skip)
-      .limit(limit)
-      .select('-reviews'); // Exclude reviews for list view
+    const sortLatest = { latest: -1, createdAt: -1 };
+    const sortPrevHits = { createdAt: -1 };
 
-    const count = await Movie.countDocuments(query);
+    const normalCount = await Movie.countDocuments(normalFilter);
+    const totalCount = normalCount + await Movie.countDocuments(prevHitFilter);
+
+    let movies = [];
+
+    // A. Load from "normal" bucket first
+    if (skip < normalCount) {
+      const normalRemaining = Math.min(limit, normalCount - skip);
+      const normalMovies = await Movie.find(normalFilter)
+        .sort(sortLatest)
+        .skip(skip)
+        .limit(normalRemaining)
+        .select('-reviews');
+      
+      movies = [...normalMovies];
+      
+      // B. Fill remaining slots from previousHit bucket if needed
+      if (movies.length < limit) {
+        const slotsLeft = limit - movies.length;
+        const prevHitMovies = await Movie.find(prevHitFilter)
+          .sort(sortPrevHits)
+          .limit(slotsLeft)
+          .select('-reviews');
+        
+        movies = [...movies, ...prevHitMovies];
+      }
+    } else {
+      // C. We're past all normal movies, only load previousHit
+      const prevHitSkip = skip - normalCount;
+      const prevHitMovies = await Movie.find(prevHitFilter)
+        .sort(sortPrevHits)
+        .skip(prevHitSkip)
+        .limit(limit)
+        .select('-reviews');
+      
+      movies = prevHitMovies;
+    }
 
     res.json({
       movies,
       page,
-      pages: Math.ceil(count / limit),
-      totalMovies: count,
+      pages: Math.ceil(totalCount / limit),
+      totalMovies: totalCount,
     });
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -457,6 +492,68 @@ const generateSitemap = asyncHandler(async (req, res) => {
   }
 });
 
+// ************ NEW BULK UPDATE CONTROLLER ************
+// @desc    Update MANY movies in one request
+// @route   PUT /api/movies/bulk
+// @access  Private/Admin
+const bulkUpdateMovies = asyncHandler(async (req, res) => {
+  const { movies } = req.body;
+
+  if (!Array.isArray(movies) || movies.length === 0) {
+    res.status(400);
+    throw new Error('Request body must contain a non-empty "movies" array');
+  }
+
+  // Build bulkWrite() operations
+  const operations = movies.map((item) => {
+    const { _id, latest, previousHit, type, video, videoUrl2, episodes, ...rest } = item;
+
+    if (!_id) return null; // skip items missing _id
+
+    // Simple validation – keep the same business rules
+    if (latest !== undefined && previousHit !== undefined && latest && previousHit) {
+      throw new Error(`Movie ${_id} cannot be both Latest and PreviousHit`);
+    }
+
+    const updateDoc = { ...rest }; // copy remaining fields
+
+    // Flags
+    if (latest !== undefined) updateDoc.latest = !!latest;
+    if (previousHit !== undefined) updateDoc.previousHit = !!previousHit;
+
+    // Handle Movie ⭤ WebSeries specifics
+    if (type === 'Movie') {
+      if (video !== undefined) updateDoc.video = video;
+      if (videoUrl2 !== undefined) updateDoc.videoUrl2 = videoUrl2;
+      updateDoc.episodes = undefined; // clear episodes
+    } else if (type === 'WebSeries') {
+      if (Array.isArray(episodes)) updateDoc.episodes = episodes;
+      updateDoc.video = undefined;
+      updateDoc.videoUrl2 = undefined;
+    }
+
+    return {
+      updateOne: {
+        filter: { _id },
+        update: { $set: updateDoc }
+      }
+    };
+  }).filter(Boolean);
+
+  if (operations.length === 0) {
+    res.status(400);
+    throw new Error('No valid movie updates found in the payload');
+  }
+
+  const result = await Movie.bulkWrite(operations, { ordered: false });
+
+  res.status(200).json({
+    message: 'Bulk update executed',
+    matched: result.matchedCount,
+    modified: result.modifiedCount,
+    upserted: result.upsertedCount
+  });
+});
 
 export {
   importMovies,
@@ -473,4 +570,5 @@ export {
   getLatestMovies, 
   adminReplyReview,
   generateSitemap,
+  bulkUpdateMovies // NEW EXPORT
 };

@@ -7,7 +7,7 @@ const router = express.Router();
 // ******** PUBLIC ROUTES ********
 router.post("/import", moviesController.importMovies);
 router.get("/", moviesController.getMovies);
-router.get("/sitemap.xml", moviesController.generateSitemap); // NEW
+router.get("/sitemap.xml", moviesController.generateSitemap);
 router.get("/rated/top", moviesController.getTopRatedMovies);
 router.get("/random/all", moviesController.getRandomMovies);
 router.get("/latest", moviesController.getLatestMovies);
@@ -19,6 +19,10 @@ router.post("/:id/reviews", protect, moviesController.createMovieReview);
 router.post("/:id/reviews/:reviewId/reply", protect, admin, moviesController.adminReplyReview);
 
 // ******** ADMIN ROUTES ********
+// NEW - Bulk update route (place before single movie routes)
+router.put("/bulk", protect, admin, moviesController.bulkUpdateMovies);
+
+// Existing single movie admin routes
 router.put("/:id", protect, admin, moviesController.updateMovie);
 router.delete("/:id", protect, admin, moviesController.deleteMovie);
 router.delete("/", protect, admin, moviesController.deleteAllMovies);
