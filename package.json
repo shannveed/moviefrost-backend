@@ -33,15 +33,7 @@
     "nodemon": "^3.1.7",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
-    "uuid-v4": "^0.1.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.20.1",
-    "react-helmet-async": "^2.0.5",
-    "@babel/core": "^7.23.0",
-    "@babel/preset-env": "^7.23.0",
-    "@babel/preset-react": "^7.22.0",
-    "babel-register": "^6.26.0"
+    "uuid-v4": "^0.1.0"
   },
   "engines": {
     "node": "18.x"

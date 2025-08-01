@@ -13,80 +13,11 @@ import { errorHandler } from './middlewares/errorMiddleware.js';
 import Uploadrouter from './Controllers/UploadFile.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs';
-import React from 'react';
-import ReactDOMServer from 'react-dom/server';
-import { StaticRouter } from 'react-router-dom/server';
-import { HelmetProvider } from 'react-helmet-async';
-
-// Import App for SSR - adjust path if needed
-// Note: You'll need to ensure your frontend App.js can be imported server-side
-// This might require babel transpilation or adjusting the import
-let App;
-try {
-  // Dynamic import to handle potential module issues
-  App = (await import('../Frontend/src/App.js')).default;
-} catch (error) {
-  console.warn('SSR App import failed, falling back to static serving:', error);
-}
 
 dotenv.config();
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Crawler detection regex
-const CRAWLER_REGEXP = /(googlebot|bingbot|duckduckbot|slurp|linkedinbot|twitterbot|facebookexternalhit)/i;
-
-// Load the built index.html template for SSR
-let template;
-try {
-  const templatePath = path.join(__dirname, '../Frontend/build/index.html');
-  if (fs.existsSync(templatePath)) {
-    template = fs.readFileSync(templatePath, 'utf8');
-  }
-} catch (error) {
-  console.warn('Could not load index.html template for SSR:', error);
-}
-
-// SSR function
-function ssr(req, res) {
-  if (!App || !template) {
-    // Fallback to static serving if SSR isn't available
-    return res.sendFile(path.join(__dirname, '../Frontend/build/index.html'));
-  }
-
-  try {
-    // 1) Render React tree to string
-    const helmetContext = {};
-    const app = ReactDOMServer.renderToString(
-      <HelmetProvider context={helmetContext}>
-        <StaticRouter location={req.url}>
-          <App />
-        </StaticRouter>
-      </HelmetProvider>
-    );
-
-    // 2) Pull all tags that Helmet components created
-    const { helmet } = helmetContext;
-
-    // 3) Inject the rendered app + tags into the HTML template
-    const html = template
-      .replace('<div id="root"></div>', `<div id="root">${app}</div>`)
-      .replace(
-        '<title>React App</title>',
-        helmet.title.toString() + helmet.meta.toString() + helmet.link.toString()
-      );
-
-    // 4) Serve
-    res.set('Content-Type', 'text/html');
-    return res.send(html);
-  } catch (error) {
-    console.error('SSR rendering error:', error);
-    // Fallback to static file
-    return res.sendFile(path.join(__dirname, '../Frontend/build/index.html'));
-  }
-}
 
 // Enhanced security headers - Updated to allow PopAds, Monetag, and GA4 regional endpoints
 app.use(helmet({
@@ -114,10 +45,10 @@ app.use(helmet({
         "'self'",
         "https://cloud.appwrite.io",
         "https://www.google-analytics.com",
-        "https://region1.google-analytics.com",
-        "https://region2.google-analytics.com",
-        "https://region3.google-analytics.com",
-        "https://region4.google-analytics.com",
+        "https://region1.google-analytics.com", // Added for EU GA4
+        "https://region2.google-analytics.com", // Added for other regions
+        "https://region3.google-analytics.com", // Added for other regions
+        "https://region4.google-analytics.com", // Added for other regions
         "https://moviefrost.com",
         "https://www.moviefrost.com",
         "https://moviefrost-backend.vercel.app",
@@ -154,7 +85,7 @@ app.use(compression({
   }
 }));
 
-// CORS configuration
+// Update the corsOptions in your server.js
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
@@ -166,10 +97,12 @@ const corsOptions = {
       'https://moviefrost-frontend-*.vercel.app'
     ];
     
+    // Allow requests with no origin (like mobile apps)
     if (!origin) {
       return callback(null, true);
     }
     
+    // Check if the origin is allowed
     if (allowedOrigins.some(allowedOrigin => {
       if (allowedOrigin.includes('*')) {
         const regex = new RegExp(allowedOrigin.replace('*', '.*'));
@@ -209,18 +142,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Connect DB
 connectDB();
 
-// SSR Middleware for public SEO routes
-app.get(
-  /^\/$|^\/about-us$|^\/contact-us$|^\/movies.*|^\/movie\/[^/]+$|^\/watch\/[^/]+$/,
-  (req, res, next) => {
-    const userAgent = req.headers['user-agent'] || '';
-    if (CRAWLER_REGEXP.test(userAgent) && template && App) {
-      return ssr(req, res);
-    }
-    return next();
-  }
-);
-
 // API routes
 app.use('/api/users', userRoutes);
 app.use('/api/movies', moviesRouter);
@@ -252,8 +173,10 @@ app.get('/sitemap.xml', async (req, res) => {
 // Error handling
 app.use(errorHandler);
 
-// For Vercel deployment
+// For Vercel deployment, we don't need to create HTTP server or listen
+// Vercel handles this automatically
 if (process.env.NODE_ENV !== 'production') {
+  // Socket.io setup for local development only
   const httpServer = createServer(app);
   const io = new SocketServer(httpServer, {
     cors: corsOptions,

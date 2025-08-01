@@ -555,48 +555,6 @@ const bulkUpdateMovies = asyncHandler(async (req, res) => {
   });
 });
 
-// Generate comprehensive movies sitemap - NEW
-export const generateMoviesSitemap = asyncHandler(async (req, res) => {
-  try {
-    // 1) Get all movies
-    const movies = await Movie.find({}).select('_id updatedAt');
-    
-    // 2) Calculate total pages for pagination
-    const total = await Movie.countDocuments({});
-    const limit = 50; // Same limit used in getMovies
-    const pages = Math.ceil(total / limit);
-    
-    let sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n';
-    sitemap += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
-    
-    // Add paginated /movies pages
-    for (let p = 1; p <= pages; p++) {
-      sitemap += `  <url>\n`;
-      sitemap += `    <loc>https://moviefrost.com/movies?page=${p}</loc>\n`;
-      sitemap += `    <changefreq>daily</changefreq>\n`;
-      sitemap += `    <priority>0.7</priority>\n`;
-      sitemap += `  </url>\n`;
-    }
-    
-    // Add individual movie pages
-    movies.forEach(movie => {
-      sitemap += `  <url>\n`;
-      sitemap += `    <loc>https://moviefrost.com/movie/${movie._id}</loc>\n`;
-      sitemap += `    <lastmod>${movie.updatedAt.toISOString()}</lastmod>\n`;
-      sitemap += `    <changefreq>weekly</changefreq>\n`;
-      sitemap += `    <priority>0.8</priority>\n`;
-      sitemap += `  </url>\n`;
-    });
-    
-    sitemap += '</urlset>';
-    
-    res.header('Content-Type', 'application/xml');
-    res.send(sitemap);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
 
 export {
   importMovies,
@@ -613,6 +571,5 @@ export {
   getLatestMovies, 
   adminReplyReview,
   generateSitemap,
-    generateMoviesSitemap, // NEW
   bulkUpdateMovies // NEW EXPORT
 };
