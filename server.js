@@ -13,35 +13,11 @@ import { errorHandler } from './middlewares/errorMiddleware.js';
 import Uploadrouter from './Controllers/UploadFile.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import prerender from 'prerender-node';
 
 dotenv.config();
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-/* ---------------- Canonical domain -------------- */
-app.use((req, res, next) => {
-  const host = req.headers.host;
-  const canonical = 'moviefrost.com';
-  
-  // Allow localhost for development
-  if (process.env.NODE_ENV === 'development') {
-    return next();
-  }
-  
-  if (host !== canonical) {
-    return res.redirect(301, `https://${canonical}${req.originalUrl}`);
-  }
-  next();
-});
-
-/* -------------- Pre-render for bots ------------- */
-if (process.env.NODE_ENV === 'production') {
-  prerender.set('prerenderServiceUrl', 'https://service.prerender.io/');
-  prerender.set('protocol', 'https');
-  app.use(prerender);
-}
 
 // Enhanced security headers - Updated to allow PopAds, Monetag, and GA4 regional endpoints
 app.use(helmet({
@@ -69,10 +45,10 @@ app.use(helmet({
         "'self'",
         "https://cloud.appwrite.io",
         "https://www.google-analytics.com",
-        "https://region1.google-analytics.com",
-        "https://region2.google-analytics.com",
-        "https://region3.google-analytics.com",
-        "https://region4.google-analytics.com",
+        "https://region1.google-analytics.com", // Added for EU GA4
+        "https://region2.google-analytics.com", // Added for other regions
+        "https://region3.google-analytics.com", // Added for other regions
+        "https://region4.google-analytics.com", // Added for other regions
         "https://moviefrost.com",
         "https://www.moviefrost.com",
         "https://moviefrost-backend.vercel.app",
@@ -109,7 +85,7 @@ app.use(compression({
   }
 }));
 
-// CORS configuration (keeping existing)
+// Update the corsOptions in your server.js
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
@@ -121,10 +97,12 @@ const corsOptions = {
       'https://moviefrost-frontend-*.vercel.app'
     ];
     
+    // Allow requests with no origin (like mobile apps)
     if (!origin) {
       return callback(null, true);
     }
     
+    // Check if the origin is allowed
     if (allowedOrigins.some(allowedOrigin => {
       if (allowedOrigin.includes('*')) {
         const regex = new RegExp(allowedOrigin.replace('*', '.*'));
@@ -195,8 +173,10 @@ app.get('/sitemap.xml', async (req, res) => {
 // Error handling
 app.use(errorHandler);
 
-// For Vercel deployment
+// For Vercel deployment, we don't need to create HTTP server or listen
+// Vercel handles this automatically
 if (process.env.NODE_ENV !== 'production') {
+  // Socket.io setup for local development only
   const httpServer = createServer(app);
   const io = new SocketServer(httpServer, {
     cors: corsOptions,

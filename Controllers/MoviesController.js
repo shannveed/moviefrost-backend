@@ -438,12 +438,11 @@ const adminReplyReview = asyncHandler(async (req, res) => {
   }
 });
 
-// Replace the existing generateSitemap function with this:
+// Generate sitemap - Updated section only
 const generateSitemap = asyncHandler(async (req, res) => {
   try {
     const movies = await Movie.find({}).select('_id name updatedAt');
     const categories = await Categories.find({}).select('title');
-    const pages = Math.ceil((await Movie.countDocuments()) / 50);
     
     let sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n';
     sitemap += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
@@ -465,7 +464,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `  </url>\n`;
     });
     
-    // Individual movie pages
+    // Movie pages
     movies.forEach(movie => {
       sitemap += `  <url>\n`;
       sitemap += `    <loc>https://moviefrost.com/movie/${movie._id}</loc>\n`;
@@ -475,7 +474,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `  </url>\n`;
     });
     
-    // Category listing pages
+    // Category pages
     categories.forEach(category => {
       sitemap += `  <url>\n`;
       sitemap += `    <loc>https://moviefrost.com/movies?category=${encodeURIComponent(category.title)}</loc>\n`;
@@ -483,15 +482,6 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `    <priority>0.7</priority>\n`;
       sitemap += `  </url>\n`;
     });
-    
-    // Paginated catalogue pages
-    for (let p = 1; p <= pages; p++) {
-      sitemap += `  <url>\n`;
-      sitemap += `    <loc>https://moviefrost.com/movies?page=${p}</loc>\n`;
-      sitemap += `    <changefreq>daily</changefreq>\n`;
-      sitemap += `    <priority>${p === 1 ? '0.9' : '0.6'}</priority>\n`;
-      sitemap += `  </url>\n`;
-    }
     
     sitemap += '</urlset>';
     
@@ -501,7 +491,6 @@ const generateSitemap = asyncHandler(async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
-
 
 // ************ NEW BULK UPDATE CONTROLLER ************
 // @desc    Update MANY movies in one request
