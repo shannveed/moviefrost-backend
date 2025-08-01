@@ -19,18 +19,6 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// SEO Improvement: Enforce 'www' subdomain and HTTPS in production
-if (process.env.NODE_ENV === 'production') {
-  app.use((req, res, next) => {
-    const host = req.headers.host;
-    if (!host.startsWith('www.') && !host.startsWith('localhost')) {
-      return res.redirect(301, `https://www.${host}${req.url}`);
-    }
-    next();
-  });
-}
-
-
 // Enhanced security headers - Updated to allow PopAds, Monetag, and GA4 regional endpoints
 app.use(helmet({
   contentSecurityPolicy: {
@@ -68,7 +56,6 @@ app.use(helmet({
         "https://c1.popads.net",
         "https://cdn.monetag.com",
         "https://a.monetag.com",
-        "wss://www.moviefrost.com", // UPDATED for www
         "wss://moviefrost.com"
       ],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
@@ -105,26 +92,27 @@ const corsOptions = {
       'http://localhost:3000',
       'http://localhost:5000',
       'https://moviefrost.com',
-      'https://www.moviefrost.com', // Added www
+      'https://www.moviefrost.com',
       'https://moviefrost-frontend.vercel.app',
-      /https:\/\/moviefrost-frontend-.*\.vercel\.app$/, // Regex for preview deployments
+      'https://moviefrost-frontend-*.vercel.app'
     ];
     
-    // Allow requests with no origin (like mobile apps, server-to-server)
+    // Allow requests with no origin (like mobile apps)
     if (!origin) {
       return callback(null, true);
     }
     
     // Check if the origin is allowed
     if (allowedOrigins.some(allowedOrigin => {
-      if (allowedOrigin instanceof RegExp) {
-        return allowedOrigin.test(origin);
+      if (allowedOrigin.includes('*')) {
+        const regex = new RegExp(allowedOrigin.replace('*', '.*'));
+        return regex.test(origin);
       }
       return allowedOrigin === origin;
     })) {
       callback(null, true);
     } else {
-      callback(new Error(`Not allowed by CORS: ${origin}`));
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
@@ -167,23 +155,17 @@ app.get('/health', (req, res) => {
 
 // Root endpoint
 app.get('/', (req, res) => {
-  res.json({ message: 'MovieFrost API is running', version: '1.0.1' });
+  res.json({ message: 'MovieFrost API is running', version: '1.0.0' });
 });
 
-// Sitemap route - Let frontend handle this or proxy correctly
+// Sitemap route
 app.get('/sitemap.xml', async (req, res) => {
   try {
-    // This proxies the request to the internal API route that generates the sitemap
-    const apiUrl = process.env.API_URL || 'https://www.moviefrost.com';
-    const response = await fetch(`${apiUrl}/api/movies/sitemap.xml`);
-    if (!response.ok) {
-        throw new Error(`Sitemap generation failed with status: ${response.status}`);
-    }
+    const response = await fetch(`${process.env.API_URL || 'https://moviefrost-backend.vercel.app'}/api/movies/sitemap.xml`);
     const sitemap = await response.text();
     res.header('Content-Type', 'application/xml');
     res.send(sitemap);
   } catch (error) {
-    console.error("Sitemap proxy error:", error);
     res.status(500).send('Error generating sitemap');
   }
 });

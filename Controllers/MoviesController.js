@@ -170,8 +170,6 @@ const createMovieReview = asyncHandler(async (req, res) => {
   }
 });
 
-// ************ ADMIN CONTROLLERS ************
-
 const updateMovie = asyncHandler(async (req, res) => {
   try {
     const {
@@ -440,27 +438,24 @@ const adminReplyReview = asyncHandler(async (req, res) => {
   }
 });
 
-// SEO Improvement: Comprehensive Sitemap Generation
+// Generate sitemap - Updated section only
 const generateSitemap = asyncHandler(async (req, res) => {
-  const baseUrl = 'https://www.moviefrost.com';
   try {
-    const movies = await Movie.find({}).select('_id updatedAt');
+    const movies = await Movie.find({}).select('_id name updatedAt');
     const categories = await Categories.find({}).select('title');
-    const browseByValues = await Movie.distinct('browseBy', { browseBy: { $nin: [null, ""] } });
-
+    
     let sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n';
     sitemap += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
-
-    // Static pages with priorities
+    
+    // Static pages - Updated with additional pages for better SEO
     const staticPages = [
-      { url: `${baseUrl}/`, priority: '1.0', changefreq: 'daily' },
-      { url: `${baseUrl}/movies`, priority: '0.9', changefreq: 'daily' },
-      { url: `${baseUrl}/about-us`, priority: '0.7', changefreq: 'monthly' },
-      { url: `${baseUrl}/contact-us`, priority: '0.7', changefreq: 'monthly' },
-      { url: `${baseUrl}/login`, priority: '0.6', changefreq: 'yearly' },
-      { url: `${baseUrl}/register`, priority: '0.6', changefreq: 'yearly' },
+      { url: 'https://moviefrost.com/', priority: '1.0', changefreq: 'daily' },
+      { url: 'https://moviefrost.com/#popular', priority: '0.8', changefreq: 'daily' },
+      { url: 'https://moviefrost.com/movies', priority: '0.9', changefreq: 'daily' },
+      { url: 'https://moviefrost.com/about-us', priority: '0.7', changefreq: 'weekly' },
+      { url: 'https://moviefrost.com/contact-us', priority: '0.7', changefreq: 'weekly' },
     ];
-
+    
     staticPages.forEach(page => {
       sitemap += `  <url>\n`;
       sitemap += `    <loc>${page.url}</loc>\n`;
@@ -468,45 +463,34 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `    <priority>${page.priority}</priority>\n`;
       sitemap += `  </url>\n`;
     });
-
+    
     // Movie pages
     movies.forEach(movie => {
       sitemap += `  <url>\n`;
-      sitemap += `    <loc>${baseUrl}/movie/${movie._id}</loc>\n`;
-      sitemap += `    <lastmod>${movie.updatedAt.toISOString().split('T')[0]}</lastmod>\n`;
+      sitemap += `    <loc>https://moviefrost.com/movie/${movie._id}</loc>\n`;
+      sitemap += `    <lastmod>${movie.updatedAt.toISOString()}</lastmod>\n`;
       sitemap += `    <changefreq>weekly</changefreq>\n`;
       sitemap += `    <priority>0.8</priority>\n`;
       sitemap += `  </url>\n`;
     });
-
+    
     // Category pages
     categories.forEach(category => {
       sitemap += `  <url>\n`;
-      sitemap += `    <loc>${baseUrl}/movies?category=${encodeURIComponent(category.title)}</loc>\n`;
+      sitemap += `    <loc>https://moviefrost.com/movies?category=${encodeURIComponent(category.title)}</loc>\n`;
       sitemap += `    <changefreq>weekly</changefreq>\n`;
       sitemap += `    <priority>0.7</priority>\n`;
       sitemap += `  </url>\n`;
     });
     
-    // Browse By pages
-    browseByValues.forEach(value => {
-      sitemap += `  <url>\n`;
-      sitemap += `    <loc>${baseUrl}/movies?browseBy=${encodeURIComponent(value)}</loc>\n`;
-      sitemap += `    <changefreq>weekly</changefreq>\n`;
-      sitemap += `    <priority>0.7</priority>\n`;
-      sitemap += `  </url>\n`;
-    });
-
     sitemap += '</urlset>';
-
+    
     res.header('Content-Type', 'application/xml');
-    res.status(200).send(sitemap);
+    res.send(sitemap);
   } catch (error) {
-    console.error('Sitemap Generation Error:', error);
-    res.status(500).json({ message: 'Error generating sitemap' });
+    res.status(500).json({ message: error.message });
   }
 });
-
 
 // ************ NEW BULK UPDATE CONTROLLER ************
 // @desc    Update MANY movies in one request
@@ -571,6 +555,7 @@ const bulkUpdateMovies = asyncHandler(async (req, res) => {
   });
 });
 
+
 export {
   importMovies,
   getMovies,
@@ -585,6 +570,6 @@ export {
   getDistinctBrowseBy,
   getLatestMovies, 
   adminReplyReview,
-  generateSitemap, // UPDATED EXPORT
-  bulkUpdateMovies
+  generateSitemap,
+  bulkUpdateMovies // NEW EXPORT
 };
