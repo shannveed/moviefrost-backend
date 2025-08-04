@@ -1,41 +1,55 @@
-// backend/Controllers/UploadFile.js
+// UploadFile.js
 import express from 'express';
 import multer from 'multer';
-import { storage, ID, InputFile } from '../config/appwriteClient.js';
+import { storage, ID } from '../config/appwriteClient.js';
+import dotenv from 'dotenv';
 
-/* --------  Multer in-memory storage (10 MB limit) -------- */
+dotenv.config();
+
+const Uploadrouter = express.Router();
+
+// Configure multer
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
-});
-
-const router = express.Router();
-
-/*  POST /api/upload  ------------------------------------------------- */
-router.post('/', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file received' });
-    }
-
-    /*  Upload to Appwrite Storage  */
-    const bucketId = process.env.APPWRITE_BUCKET_ID;
-    const appwriteResponse = await storage.createFile(
-      bucketId,
-      ID.unique(),
-      InputFile.fromBuffer(req.file.buffer, req.file.originalname), // 👈 important
-      ['role:all'],                                                 // public read
-    );
-
-    const url =
-      `${process.env.APPWRITE_ENDPOINT}/storage/buckets/${bucketId}` +
-      `/files/${appwriteResponse.$id}/view?project=${process.env.APPWRITE_PROJECT_ID}`;
-
-    res.status(201).json({ success: true, url, fileId: appwriteResponse.$id });
-  } catch (err) {
-    console.error('Upload failed:', err);
-    res.status(500).json({ success: false, message: err.message });
+  limits: {
+    fileSize: 1 * 1024 * 1024, // 10MB limit
   }
 });
 
-export default router;
+Uploadrouter.post('/', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+
+    // Check if file is available
+    if (!file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const bucketId = process.env.APPWRITE_BUCKET_ID;
+
+    // Upload to Appwrite
+    const response = await storage.createFile(
+      bucketId,
+      ID.unique(),
+      file.buffer,
+      ['role:all'] // Adjust permissions as needed
+    );
+
+    // Construct the file URL
+    const fileUrl = `${process.env.APPWRITE_ENDPOINT}/storage/buckets/${bucketId}/files/${response.$id}/view?project=${process.env.APPWRITE_PROJECT_ID}`;
+
+    res.status(200).json({
+      success: true,
+      url: fileUrl,
+      fileId: response.$id
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Error uploading file'
+    });
+  }
+});
+
+export default Uploadrouter;
