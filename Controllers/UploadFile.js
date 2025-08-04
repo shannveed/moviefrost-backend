@@ -2,7 +2,6 @@
 import express from 'express';
 import multer from 'multer';
 import { storage, ID } from '../config/appwriteClient.js';
-import { InputFile } from 'node-appwrite';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -13,7 +12,7 @@ const Uploadrouter = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fileSize: 1 * 1024 * 1024, // 10MB limit
   }
 });
 
@@ -28,12 +27,12 @@ Uploadrouter.post('/', upload.single('file'), async (req, res) => {
 
     const bucketId = process.env.APPWRITE_BUCKET_ID;
 
-    // Upload to Appwrite using InputFile
+    // Upload to Appwrite
     const response = await storage.createFile(
       bucketId,
       ID.unique(),
-      InputFile.fromBuffer(file.buffer, file.originalname),
-      ['role:all'] // public read permissions
+      file.buffer,
+      ['role:all'] // Adjust permissions as needed
     );
 
     // Construct the file URL
