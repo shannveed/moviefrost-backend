@@ -1,55 +1,41 @@
-// UploadFile.js
+// backend/Controllers/UploadFile.js
 import express from 'express';
 import multer from 'multer';
-import { storage, ID } from '../config/appwriteClient.js';
-import dotenv from 'dotenv';
+import { storage, ID, InputFile } from '../config/appwriteClient.js';
 
-dotenv.config();
-
-const Uploadrouter = express.Router();
-
-// Configure multer
+/* --------  Multer in-memory storage (10 MB limit) -------- */
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 1 * 1024 * 1024, // 10MB limit
-  }
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
-Uploadrouter.post('/', upload.single('file'), async (req, res) => {
-  try {
-    const file = req.file;
+const router = express.Router();
 
-    // Check if file is available
-    if (!file) {
-      return res.status(400).json({ message: 'No file uploaded' });
+/*  POST /api/upload  ------------------------------------------------- */
+router.post('/', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file received' });
     }
 
+    /*  Upload to Appwrite Storage  */
     const bucketId = process.env.APPWRITE_BUCKET_ID;
-
-    // Upload to Appwrite
-    const response = await storage.createFile(
+    const appwriteResponse = await storage.createFile(
       bucketId,
       ID.unique(),
-      file.buffer,
-      ['role:all'] // Adjust permissions as needed
+      InputFile.fromBuffer(req.file.buffer, req.file.originalname), // 👈 important
+      ['role:all'],                                                 // public read
     );
 
-    // Construct the file URL
-    const fileUrl = `${process.env.APPWRITE_ENDPOINT}/storage/buckets/${bucketId}/files/${response.$id}/view?project=${process.env.APPWRITE_PROJECT_ID}`;
+    const url =
+      `${process.env.APPWRITE_ENDPOINT}/storage/buckets/${bucketId}` +
+      `/files/${appwriteResponse.$id}/view?project=${process.env.APPWRITE_PROJECT_ID}`;
 
-    res.status(200).json({
-      success: true,
-      url: fileUrl,
-      fileId: response.$id
-    });
-  } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Error uploading file'
-    });
+    res.status(201).json({ success: true, url, fileId: appwriteResponse.$id });
+  } catch (err) {
+    console.error('Upload failed:', err);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-export default Uploadrouter;
+export default router;
