@@ -1,5 +1,5 @@
 // appwriteClient.js
-import { Client, Storage, ID } from 'node-appwrite';
+import { Client, Storage, ID, InputFile } from 'node-appwrite';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -11,4 +11,4 @@ const client = new Client()
 
 const storage = new Storage(client);
 
-export { storage, ID };
+export { storage, ID, InputFile };
