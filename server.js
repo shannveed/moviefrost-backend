@@ -19,7 +19,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Enhanced security headers - Updated to allow PopAds, Monetag, GA4 regional endpoints, and Google accounts
+// Enhanced security headers - Updated to allow PopAds, Monetag, and GA4 regional endpoints
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -32,7 +32,6 @@ app.use(helmet({
         "https://www.google-analytics.com",
         "https://cloud.appwrite.io",
         "https://apis.google.com",
-        "https://accounts.google.com",  // <-- allow GSI script
         "https://c1.popads.net",
         "https://cdn.monetag.com",
         "https://a.monetag.com",
@@ -50,7 +49,6 @@ app.use(helmet({
         "https://region2.google-analytics.com", // Added for other regions
         "https://region3.google-analytics.com", // Added for other regions
         "https://region4.google-analytics.com", // Added for other regions
-        "https://accounts.google.com",  // <-- allow OAuth XHRs
         "https://moviefrost.com",
         "https://www.moviefrost.com",
         "https://moviefrost-backend.vercel.app",
