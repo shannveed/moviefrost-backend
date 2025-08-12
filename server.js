@@ -1,3 +1,4 @@
+// backend/server.js
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -19,7 +20,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Enhanced security headers - Updated to allow PopAds, Monetag, and GA4 regional endpoints
+// Enhanced security headers - Updated to allow PopAds, Monetag, GA4 and Google OAuth (GSI)
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -32,6 +33,7 @@ app.use(helmet({
         "https://www.google-analytics.com",
         "https://cloud.appwrite.io",
         "https://apis.google.com",
+        "https://accounts.google.com",        // <-- GSI script
         "https://c1.popads.net",
         "https://cdn.monetag.com",
         "https://a.monetag.com",
@@ -45,10 +47,10 @@ app.use(helmet({
         "'self'",
         "https://cloud.appwrite.io",
         "https://www.google-analytics.com",
-        "https://region1.google-analytics.com", // Added for EU GA4
-        "https://region2.google-analytics.com", // Added for other regions
-        "https://region3.google-analytics.com", // Added for other regions
-        "https://region4.google-analytics.com", // Added for other regions
+        "https://region1.google-analytics.com",
+        "https://region2.google-analytics.com",
+        "https://region3.google-analytics.com",
+        "https://region4.google-analytics.com",
         "https://moviefrost.com",
         "https://www.moviefrost.com",
         "https://moviefrost-backend.vercel.app",
@@ -56,12 +58,20 @@ app.use(helmet({
         "https://c1.popads.net",
         "https://cdn.monetag.com",
         "https://a.monetag.com",
+        "https://accounts.google.com",        // <-- OAuth/XHR endpoints
+        "https://oauth2.googleapis.com",      // <-- token/introspection endpoints
+        "https://www.googleapis.com",         // <-- (general Google APIs if needed)
         "wss://moviefrost.com"
       ],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'", "https:", "blob:"],
-      frameSrc: ["'self'", "https:", "https://a.monetag.com"],
+      frameSrc: [
+        "'self'",
+        "https:",
+        "https://a.monetag.com",
+        "https://accounts.google.com"        // <-- GSI uses an iframe sometimes
+      ],
     },
   },
   hsts: {
@@ -85,7 +95,7 @@ app.use(compression({
   }
 }));
 
-// Update the corsOptions in your server.js
+// CORS
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
@@ -96,13 +106,9 @@ const corsOptions = {
       'https://moviefrost-frontend.vercel.app',
       'https://moviefrost-frontend-*.vercel.app'
     ];
-    
-    // Allow requests with no origin (like mobile apps)
     if (!origin) {
       return callback(null, true);
     }
-    
-    // Check if the origin is allowed
     if (allowedOrigins.some(allowedOrigin => {
       if (allowedOrigin.includes('*')) {
         const regex = new RegExp(allowedOrigin.replace('*', '.*'));
@@ -123,8 +129,6 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
-// Trust proxy - Important for Vercel
 app.set('trust proxy', 1);
 
 // Cache control for static assets
@@ -158,7 +162,7 @@ app.get('/', (req, res) => {
   res.json({ message: 'MovieFrost API is running', version: '1.0.0' });
 });
 
-// Sitemap route
+// Sitemap proxy
 app.get('/sitemap.xml', async (req, res) => {
   try {
     const response = await fetch(`${process.env.API_URL || 'https://moviefrost-backend.vercel.app'}/api/movies/sitemap.xml`);
@@ -173,10 +177,8 @@ app.get('/sitemap.xml', async (req, res) => {
 // Error handling
 app.use(errorHandler);
 
-// For Vercel deployment, we don't need to create HTTP server or listen
-// Vercel handles this automatically
+// Local dev socket.io server (Vercel auto-handles prod)
 if (process.env.NODE_ENV !== 'production') {
-  // Socket.io setup for local development only
   const httpServer = createServer(app);
   const io = new SocketServer(httpServer, {
     cors: corsOptions,
@@ -196,5 +198,4 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
-// Export for Vercel
 export default app;
