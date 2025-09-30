@@ -131,7 +131,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.set('trust proxy', 1);
 
-// ──── SEO: Serve robots.txt and sitemap.xml statically ────
+// ──── SEO: Serve robots.txt statically ────
 app.use('/robots.txt', (_req, res) => {
   const robotsContent = `# MovieFrost Robots.txt
 User-agent: *
@@ -174,7 +174,15 @@ Allow: https://c1.popads.net`;
   res.type('text/plain').send(robotsContent);
 });
 
-app.use('/sitemap.xml', (_req, res, next) => next()); // handled by route
+/* -----------------------------------------------------------------
+   ⬇️  SITEMAP MUST BE REGISTERED BEFORE API ROUTES
+   This is the key change - we serve the sitemap directly here
+*/
+// Import the generateSitemap function from MoviesController
+import { generateSitemap } from './Controllers/MoviesController.js';
+
+// Serve sitemap at root level - this MUST come before body parsers
+app.get('/sitemap.xml', generateSitemap);
 
 // Cache control for static assets
 app.use((req, res, next) => {
@@ -205,18 +213,6 @@ app.get('/health', (req, res) => {
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({ message: 'MovieFrost API is running', version: '1.0.0' });
-});
-
-// Sitemap proxy
-app.get('/sitemap.xml', async (req, res) => {
-  try {
-    const response = await fetch(`${process.env.API_URL || 'https://moviefrost-backend.vercel.app'}/api/movies/sitemap.xml`);
-    const sitemap = await response.text();
-    res.header('Content-Type', 'application/xml');
-    res.send(sitemap);
-  } catch (error) {
-    res.status(500).send('Error generating sitemap');
-  }
 });
 
 // Error handling
