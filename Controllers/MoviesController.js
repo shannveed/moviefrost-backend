@@ -449,11 +449,11 @@ const generateSitemap = asyncHandler(async (req, res) => {
     
     // Static pages - Updated with additional pages for better SEO
     const staticPages = [
-      { url: 'https://moviefrost.com/', priority: '1.0', changefreq: 'daily' },
-      { url: 'https://moviefrost.com/#popular', priority: '0.8', changefreq: 'daily' },
-      { url: 'https://moviefrost.com/movies', priority: '0.9', changefreq: 'daily' },
-      { url: 'https://moviefrost.com/about-us', priority: '0.7', changefreq: 'weekly' },
-      { url: 'https://moviefrost.com/contact-us', priority: '0.7', changefreq: 'weekly' },
+      { url: 'https://www.moviefrost.com/', priority: '1.0', changefreq: 'daily' },
+      { url: 'https://www.moviefrost.com/#popular', priority: '0.8', changefreq: 'daily' },
+      { url: 'https://www.moviefrost.com/movies', priority: '0.9', changefreq: 'daily' },
+      { url: 'https://www.moviefrost.com/about-us', priority: '0.7', changefreq: 'weekly' },
+      { url: 'https://www.moviefrost.com/contact-us', priority: '0.7', changefreq: 'weekly' },
     ];
     
     staticPages.forEach(page => {
@@ -467,7 +467,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
     // Movie pages
     movies.forEach(movie => {
       sitemap += `  <url>\n`;
-      sitemap += `    <loc>https://moviefrost.com/movie/${movie._id}</loc>\n`;
+      sitemap += `    <loc>https://www.moviefrost.com/movie/${movie._id}</loc>\n`;
       sitemap += `    <lastmod>${movie.updatedAt.toISOString()}</lastmod>\n`;
       sitemap += `    <changefreq>weekly</changefreq>\n`;
       sitemap += `    <priority>0.8</priority>\n`;
@@ -477,7 +477,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
     // Category pages
     categories.forEach(category => {
       sitemap += `  <url>\n`;
-      sitemap += `    <loc>https://moviefrost.com/movies?category=${encodeURIComponent(category.title)}</loc>\n`;
+      sitemap += `    <loc>https://www.moviefrost.com/movies?category=${encodeURIComponent(category.title)}</loc>\n`;
       sitemap += `    <changefreq>weekly</changefreq>\n`;
       sitemap += `    <priority>0.7</priority>\n`;
       sitemap += `  </url>\n`;
@@ -487,6 +487,18 @@ const generateSitemap = asyncHandler(async (req, res) => {
     
     res.header('Content-Type', 'application/xml');
     res.send(sitemap);
+    
+    // ──♻️ Ping search engines if we are running in production ───────────
+    try {
+      if (process.env.NODE_ENV === 'production') {
+        const encoded = encodeURIComponent('https://www.moviefrost.com/sitemap.xml');
+        // Google
+        fetch('https://www.google.com/ping?sitemap=' + encoded).catch(() => {});
+        // Bing  
+        fetch('https://www.bing.com/ping?sitemap=' + encoded).catch(() => {});
+      }
+    } catch (_) {}
+    
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

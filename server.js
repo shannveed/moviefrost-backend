@@ -131,6 +131,51 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.set('trust proxy', 1);
 
+// ──── SEO: Serve robots.txt and sitemap.xml statically ────
+app.use('/robots.txt', (_req, res) => {
+  const robotsContent = `# MovieFrost Robots.txt
+User-agent: *
+Allow: /
+Allow: /movies
+Allow: /movie/*
+Allow: /about-us
+Allow: /contact-us
+Allow: https://c1.popads.net
+Disallow: /dashboard
+Disallow: /admin
+Disallow: /profile
+Disallow: /password
+Disallow: /edit/*
+Disallow: /api/
+
+# Sitemaps
+Sitemap: https://www.moviefrost.com/sitemap.xml
+
+# Crawl-delay
+Crawl-delay: 1
+
+# Major Search Engines
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Slurp
+Allow: /
+
+User-agent: DuckDuckBot
+Allow: /
+
+# Ad Networks
+User-agent: *
+Allow: https://c1.popads.net`;
+  
+  res.type('text/plain').send(robotsContent);
+});
+
+app.use('/sitemap.xml', (_req, res, next) => next()); // handled by route
+
 // Cache control for static assets
 app.use((req, res, next) => {
   if (req.url.match(/\.(js|css|jpg|jpeg|png|gif|ico|svg|woff|woff2|ttf|eot)$/)) {
