@@ -14,16 +14,13 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
-// Helper to compute public base URL for this backend (Vercel URL in prod)
-const PUBLIC_BASE_URL =
-  process.env.PUBLIC_BASE_URL ||
-  process.env.VERCEL_URL?.startsWith('http')
-    ? process.env.VERCEL_URL
-    : process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:5000';
+// Compute public base URL for this backend (Vercel URL in prod)
+const vercelUrl = process.env.VERCEL_URL
+  ? (process.env.VERCEL_URL.startsWith('http') ? process.env.VERCEL_URL : `https://${process.env.VERCEL_URL}`)
+  : undefined;
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || vercelUrl || 'http://localhost:5000';
 
-// POST /api/upload  -> upload to Appwrite (server-to-server)
+// POST /api/upload -> upload to Appwrite (server-to-server)
 Uploadrouter.post('/', upload.single('file'), async (req, res) => {
   try {
     const file = req.file;
@@ -34,16 +31,13 @@ Uploadrouter.post('/', upload.single('file'), async (req, res) => {
     const { APPWRITE_BUCKET_ID, APPWRITE_PROJECT_ID, APPWRITE_ENDPOINT } = process.env;
     if (!APPWRITE_BUCKET_ID || !APPWRITE_PROJECT_ID || !APPWRITE_ENDPOINT) {
       console.error('Appwrite env missing, check: APPWRITE_BUCKET_ID, APPWRITE_PROJECT_ID, APPWRITE_ENDPOINT');
-      return res.status(500).json({
-        success: false,
-        message: 'Storage configuration error',
-      });
+      return res.status(500).json({ success: false, message: 'Storage configuration error' });
     }
 
     // Build proper input file for node-appwrite
     const input = InputFile.fromBuffer(file.buffer, file.originalname);
 
-    // If your bucket is File-level security ON, make new files publicly readable
+    // If your bucket uses file-level security, make new files publicly readable
     const permissions = [Permission.read(Role.any())];
 
     const created = await storage.createFile(
@@ -53,7 +47,7 @@ Uploadrouter.post('/', upload.single('file'), async (req, res) => {
       permissions
     );
 
-    // IMPORTANT: Return our backend proxy URL, not cloud.appwrite.io
+    // Return our backend proxy URL (not cloud.appwrite.io)
     const proxyUrl = `${PUBLIC_BASE_URL}/api/upload/file/${created.$id}/view`;
 
     return res.status(200).json({
@@ -70,12 +64,11 @@ Uploadrouter.post('/', upload.single('file'), async (req, res) => {
   }
 });
 
-// GET /api/upload/file/:id/view  -> stream file bytes to the browser
+// GET /api/upload/file/:id/view -> stream file bytes to the browser
 Uploadrouter.get('/file/:id/view', async (req, res) => {
   try {
     const { id } = req.params;
     const { APPWRITE_BUCKET_ID } = process.env;
-
     if (!APPWRITE_BUCKET_ID) {
       return res.status(500).json({ success: false, message: 'Missing APPWRITE_BUCKET_ID' });
     }
@@ -84,18 +77,13 @@ Uploadrouter.get('/file/:id/view', async (req, res) => {
     const meta = await storage.getFile(APPWRITE_BUCKET_ID, id);
     const mime = meta?.mimeType || 'application/octet-stream';
 
-    // 2) get file "view" bytes from Appwrite
-    const bufferOrStream = await storage.getFileView(APPWRITE_BUCKET_ID, id);
+    // 2) get file bytes
+    const data = await storage.getFileView(APPWRITE_BUCKET_ID, id);
 
-    // Send with long cache so images are fast
     res.setHeader('Content-Type', mime);
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
 
-    // node-appwrite returns Buffer in Node; handle both Buffer or ArrayBuffer
-    const buf = Buffer.isBuffer(bufferOrStream)
-      ? bufferOrStream
-      : Buffer.from(bufferOrStream);
-
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     return res.status(200).send(buf);
   } catch (err) {
     console.error('[Upload view] error:', err?.message);
