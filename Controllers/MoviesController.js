@@ -20,12 +20,12 @@ const getMovies = asyncHandler(async (req, res) => {
       ...(language && { language }),
       ...(rate && { rate }),
       ...(year && { year }),
-      ...(browseBy && { browseBy }),
+      ...(browseBy && browseBy.trim() !== '' && { browseBy: { $in: browseBy.split(',') } }),  // Handle empty browseBy gracefully
       ...(search && { name: { $regex: search, $options: 'i' } }),
     };
 
     const page = Number(req.query.pageNumber) || 1;
-    const limit = 50;
+    const limit = 1550;
     const skip = (page - 1) * limit;
 
     // Split into two buckets
@@ -585,3 +585,4 @@ export {
   generateSitemap,
   bulkUpdateMovies // NEW EXPORT
 };
+

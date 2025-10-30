@@ -32,8 +32,12 @@ app.use(helmet({
         "https://www.googletagmanager.com",
         "https://www.google-analytics.com",
         "https://cloud.appwrite.io",
+        "https://fra.cloud.appwrite.io",           // add this
+        "https://moviefrost-backend.vercel.app",
+        "https://www.moviefrost.com",
+        "https://moviefrost.com",
         "https://apis.google.com",
-        "https://accounts.google.com",        // <-- GSI script
+        "https://accounts.google.com",
         "https://c1.popads.net",
         "https://cdn.monetag.com",
         "https://a.monetag.com",
@@ -46,6 +50,7 @@ app.use(helmet({
       connectSrc: [
         "'self'",
         "https://cloud.appwrite.io",
+        "https://fra.cloud.appwrite.io/v1",
         "https://www.google-analytics.com",
         "https://region1.google-analytics.com",
         "https://region2.google-analytics.com",
