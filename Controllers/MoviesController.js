@@ -25,7 +25,7 @@ const getMovies = asyncHandler(async (req, res) => {
     };
 
     const page = Number(req.query.pageNumber) || 1;
-    const limit = 1550;
+    const limit = 50;
     const skip = (page - 1) * limit;
 
     // Split into two buckets
