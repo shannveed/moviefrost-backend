@@ -20,7 +20,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Enhanced security headers - Updated to allow PopAds, Monetag, GA4 and Google OAuth (GSI)
+// Enhanced security headers - UPDATED: Removed Appwrite domains
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -31,8 +31,7 @@ app.use(helmet({
         "'unsafe-eval'",
         "https://www.googletagmanager.com",
         "https://www.google-analytics.com",
-        "https://cloud.appwrite.io",
-        "https://fra.cloud.appwrite.io",           // add this
+        "https://cdn.moviefrost.com",  // Your R2 CDN
         "https://moviefrost-backend.vercel.app",
         "https://www.moviefrost.com",
         "https://moviefrost.com",
@@ -46,11 +45,10 @@ app.use(helmet({
         "https://pl27010453.profitableratecpm.com"
       ],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      imgSrc: ["'self'", "data:", "https:", "blob:"],
+      imgSrc: ["'self'", "data:", "https:", "blob:", "https://cdn.moviefrost.com"],
       connectSrc: [
         "'self'",
-        "https://cloud.appwrite.io",
-        "https://fra.cloud.appwrite.io/v1",
+        "https://cdn.moviefrost.com",  // Your R2 CDN
         "https://www.google-analytics.com",
         "https://region1.google-analytics.com",
         "https://region2.google-analytics.com",
@@ -63,19 +61,19 @@ app.use(helmet({
         "https://c1.popads.net",
         "https://cdn.monetag.com",
         "https://a.monetag.com",
-        "https://accounts.google.com",        // <-- OAuth/XHR endpoints
-        "https://oauth2.googleapis.com",      // <-- token/introspection endpoints
-        "https://www.googleapis.com",         // <-- (general Google APIs if needed)
+        "https://accounts.google.com",
+        "https://oauth2.googleapis.com",
+        "https://www.googleapis.com",
         "wss://moviefrost.com"
       ],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       objectSrc: ["'none'"],
-      mediaSrc: ["'self'", "https:", "blob:"],
+      mediaSrc: ["'self'", "https:", "blob:", "https://cdn.moviefrost.com"],
       frameSrc: [
         "'self'",
         "https:",
         "https://a.monetag.com",
-        "https://accounts.google.com"        // <-- GSI uses an iframe sometimes
+        "https://accounts.google.com"
       ],
     },
   },
@@ -179,10 +177,6 @@ Allow: https://c1.popads.net`;
   res.type('text/plain').send(robotsContent);
 });
 
-/* -----------------------------------------------------------------
-   ⬇️  SITEMAP MUST BE REGISTERED BEFORE API ROUTES
-   This is the key change - we serve the sitemap directly here
-*/
 // Import the generateSitemap function from MoviesController
 import { generateSitemap } from './Controllers/MoviesController.js';
 
