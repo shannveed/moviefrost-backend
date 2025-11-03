@@ -20,7 +20,9 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Enhanced security headers - UPDATED: Removed Appwrite domains
+// Updated: add your actual backend domain to CSP lists
+const BACKEND_HOST = 'https://moviefrost-backend-pi.vercel.app';
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -31,8 +33,8 @@ app.use(helmet({
         "'unsafe-eval'",
         "https://www.googletagmanager.com",
         "https://www.google-analytics.com",
-        "https://cdn.moviefrost.com",  // Your R2 CDN
-        "https://moviefrost-backend.vercel.app",
+        "https://cdn.moviefrost.com",
+        BACKEND_HOST,                      // updated
         "https://www.moviefrost.com",
         "https://moviefrost.com",
         "https://apis.google.com",
@@ -48,7 +50,7 @@ app.use(helmet({
       imgSrc: ["'self'", "data:", "https:", "blob:", "https://cdn.moviefrost.com"],
       connectSrc: [
         "'self'",
-        "https://cdn.moviefrost.com",  // Your R2 CDN
+        "https://cdn.moviefrost.com",
         "https://www.google-analytics.com",
         "https://region1.google-analytics.com",
         "https://region2.google-analytics.com",
@@ -56,7 +58,7 @@ app.use(helmet({
         "https://region4.google-analytics.com",
         "https://moviefrost.com",
         "https://www.moviefrost.com",
-        "https://moviefrost-backend.vercel.app",
+        BACKEND_HOST,                      // updated
         "https://moviefrost-frontend.vercel.app",
         "https://c1.popads.net",
         "https://cdn.monetag.com",
@@ -77,25 +79,16 @@ app.use(helmet({
       ],
     },
   },
-  hsts: {
-    maxAge: 31536000,
-    includeSubDomains: true,
-    preload: true
-  },
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   crossOriginEmbedderPolicy: false,
 }));
 
-// Compression with optimized settings
+// Compression
 app.use(compression({
   level: 6,
   threshold: 1024,
-  filter: (req, res) => {
-    if (req.headers['x-no-compression']) {
-      return false;
-    }
-    return compression.filter(req, res);
-  }
+  filter: (req, res) => req.headers['x-no-compression'] ? false : compression.filter(req, res)
 }));
 
 // CORS
@@ -107,22 +100,18 @@ const corsOptions = {
       'https://moviefrost.com',
       'https://www.moviefrost.com',
       'https://moviefrost-frontend.vercel.app',
-      'https://moviefrost-frontend-*.vercel.app'
+      'https://moviefrost-frontend-*.vercel.app',
+      BACKEND_HOST // allow health checks / internal tools if any
     ];
-    if (!origin) {
-      return callback(null, true);
-    }
-    if (allowedOrigins.some(allowedOrigin => {
+    if (!origin) return callback(null, true);
+    const ok = allowedOrigins.some((allowedOrigin) => {
       if (allowedOrigin.includes('*')) {
         const regex = new RegExp(allowedOrigin.replace('*', '.*'));
         return regex.test(origin);
       }
       return allowedOrigin === origin;
-    })) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+    });
+    return ok ? callback(null, true) : callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -134,7 +123,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.set('trust proxy', 1);
 
-// ──── SEO: Serve robots.txt statically ────
+// robots.txt (unchanged)
 app.use('/robots.txt', (_req, res) => {
   const robotsContent = `# MovieFrost Robots.txt
 User-agent: *
@@ -173,17 +162,14 @@ Allow: /
 # Ad Networks
 User-agent: *
 Allow: https://c1.popads.net`;
-  
   res.type('text/plain').send(robotsContent);
 });
 
-// Import the generateSitemap function from MoviesController
+// Import the generateSitemap function
 import { generateSitemap } from './Controllers/MoviesController.js';
-
-// Serve sitemap at root level - this MUST come before body parsers
 app.get('/sitemap.xml', generateSitemap);
 
-// Cache control for static assets
+// Cache headers
 app.use((req, res, next) => {
   if (req.url.match(/\.(js|css|jpg|jpeg|png|gif|ico|svg|woff|woff2|ttf|eot)$/)) {
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
@@ -191,11 +177,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// Body parsing middleware
+// Parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Connect DB
+// DB
 connectDB();
 
 // API routes
@@ -204,20 +190,20 @@ app.use('/api/movies', moviesRouter);
 app.use('/api/categories', categoriesRouter);
 app.use('/api/upload', Uploadrouter);
 
-// Health check endpoint
+// Health
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Root endpoint
+// Root
 app.get('/', (req, res) => {
   res.json({ message: 'MovieFrost API is running', version: '1.0.0' });
 });
 
-// Error handling
+// Errors
 app.use(errorHandler);
 
-// Local dev socket.io server (Vercel auto-handles prod)
+// Only create HTTP server locally
 if (process.env.NODE_ENV !== 'production') {
   const httpServer = createServer(app);
   const io = new SocketServer(httpServer, {
