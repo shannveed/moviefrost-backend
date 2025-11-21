@@ -1,3 +1,4 @@
+// backend/routes/MoviesRouter.js
 import express from "express";
 import * as moviesController from "../Controllers/MoviesController.js";
 import { protect, admin } from "../middlewares/Auth.js";
@@ -19,10 +20,17 @@ router.post("/:id/reviews", protect, moviesController.createMovieReview);
 router.post("/:id/reviews/:reviewId/reply", protect, admin, moviesController.adminReplyReview);
 
 // ******** ADMIN ROUTES ********
-// NEW - Bulk update route (place before single movie routes)
-router.put("/bulk", protect, admin, moviesController.bulkUpdateMovies);
 
-// Existing single movie admin routes
+// NEW: Bulk exact update (by exact name + type or by _id if provided)
+router.put("/bulk-exact", protect, admin, moviesController.bulkExactUpdateMovies);
+
+// NEW: Bulk delete (by exact name + type or by _id if provided)
+router.post("/bulk-delete", protect, admin, moviesController.bulkDeleteByName);
+
+// Keep bulk create route
+router.post("/bulk", protect, admin, moviesController.bulkCreateMovies);
+
+// Single movie admin routes
 router.put("/:id", protect, admin, moviesController.updateMovie);
 router.delete("/:id", protect, admin, moviesController.deleteMovie);
 router.delete("/", protect, admin, moviesController.deleteAllMovies);

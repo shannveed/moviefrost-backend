@@ -1,3 +1,4 @@
+// backend/Controllers/MoviesController.js
 import { MoviesData } from '../Data/MoviesData.js';
 import Movie from '../Models/MoviesModel.js';
 import Categories from '../Models/CategoriesModel.js';
@@ -20,7 +21,7 @@ const getMovies = asyncHandler(async (req, res) => {
       ...(language && { language }),
       ...(rate && { rate }),
       ...(year && { year }),
-      ...(browseBy && browseBy.trim() !== '' && { browseBy: { $in: browseBy.split(',') } }),  // Handle empty browseBy gracefully
+      ...(browseBy && browseBy.trim() !== '' && { browseBy: { $in: browseBy.split(',') } }),
       ...(search && { name: { $regex: search, $options: 'i' } }),
     };
 
@@ -40,7 +41,6 @@ const getMovies = asyncHandler(async (req, res) => {
 
     let movies = [];
 
-    // A. Load from "normal" bucket first
     if (skip < normalCount) {
       const normalRemaining = Math.min(limit, normalCount - skip);
       const normalMovies = await Movie.find(normalFilter)
@@ -48,28 +48,26 @@ const getMovies = asyncHandler(async (req, res) => {
         .skip(skip)
         .limit(normalRemaining)
         .select('-reviews');
-      
+
       movies = [...normalMovies];
-      
-      // B. Fill remaining slots from previousHit bucket if needed
+
       if (movies.length < limit) {
         const slotsLeft = limit - movies.length;
         const prevHitMovies = await Movie.find(prevHitFilter)
           .sort(sortPrevHits)
           .limit(slotsLeft)
           .select('-reviews');
-        
+
         movies = [...movies, ...prevHitMovies];
       }
     } else {
-      // C. We're past all normal movies, only load previousHit
       const prevHitSkip = skip - normalCount;
       const prevHitMovies = await Movie.find(prevHitFilter)
         .sort(sortPrevHits)
         .skip(prevHitSkip)
         .limit(limit)
         .select('-reviews');
-      
+
       movies = prevHitMovies;
     }
 
@@ -88,10 +86,9 @@ const getMovieById = asyncHandler(async (req, res) => {
   try {
     const movie = await Movie.findById(req.params.id).populate('reviews.userId', 'fullName image');
     if (movie) {
-      // Increment view count for SEO tracking
       movie.viewCount = (movie.viewCount || 0) + 1;
       await movie.save();
-      
+
       res.json(movie);
     } else {
       res.status(404);
@@ -159,7 +156,7 @@ const createMovieReview = asyncHandler(async (req, res) => {
 
       res.status(201).json({
         message: 'Review added',
-        review: reviewWithMovieName, 
+        review: reviewWithMovieName,
       });
     } else {
       res.status(404);
@@ -181,8 +178,8 @@ const updateMovie = asyncHandler(async (req, res) => {
       rate,
       numberOfReviews,
       category,
-      browseBy, 
-      thumbnailInfo, 
+      browseBy,
+      thumbnailInfo,
       time,
       language,
       year,
@@ -215,8 +212,8 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.desc = desc || movie.desc;
     movie.image = image || movie.image;
     movie.titleImage = titleImage || movie.titleImage;
-    movie.rate = rate !== undefined ? rate : movie.rate; 
-    movie.numberOfReviews = numberOfReviews !== undefined ? numberOfReviews : movie.numberOfReviews; 
+    movie.rate = rate !== undefined ? rate : movie.rate;
+    movie.numberOfReviews = numberOfReviews !== undefined ? numberOfReviews : movie.numberOfReviews;
     movie.category = category || movie.category;
     movie.browseBy = browseBy || movie.browseBy;
     movie.thumbnailInfo = thumbnailInfo !== undefined ? thumbnailInfo : movie.thumbnailInfo;
@@ -242,8 +239,8 @@ const updateMovie = asyncHandler(async (req, res) => {
       movie.videoUrl2 = undefined;
     } else {
       if (type) {
-          res.status(400);
-          throw new Error('Invalid type specified for update');
+        res.status(400);
+        throw new Error('Invalid type specified for update');
       }
     }
 
@@ -258,7 +255,7 @@ const deleteMovie = asyncHandler(async (req, res) => {
   try {
     const movie = await Movie.findById(req.params.id);
     if (movie) {
-      await movie.deleteOne(); 
+      await movie.deleteOne();
       res.json({ message: 'Movie removed' });
     } else {
       res.status(404);
@@ -289,8 +286,8 @@ const createMovie = asyncHandler(async (req, res) => {
       rate,
       numberOfReviews,
       category,
-      browseBy, 
-      thumbnailInfo, 
+      browseBy,
+      thumbnailInfo,
       time,
       language,
       year,
@@ -326,7 +323,7 @@ const createMovie = asyncHandler(async (req, res) => {
       numberOfReviews: numberOfReviews || 0,
       category,
       browseBy,
-      thumbnailInfo: thumbnailInfo || '', 
+      thumbnailInfo: thumbnailInfo || '',
       time,
       language,
       year,
@@ -370,7 +367,7 @@ const createMovie = asyncHandler(async (req, res) => {
     res.status(201).json(createdMovie);
 
   } catch (error) {
-     res.status(res.statusCode >= 400 ? res.statusCode : 400).json({ message: error.message });
+    res.status(res.statusCode >= 400 ? res.statusCode : 400).json({ message: error.message });
   }
 });
 
@@ -401,8 +398,8 @@ const adminReplyReview = asyncHandler(async (req, res) => {
     const { reply } = req.body;
 
     if (!reply || typeof reply !== 'string' || reply.trim() === '') {
-        res.status(400);
-        throw new Error('Reply text cannot be empty');
+      res.status(400);
+      throw new Error('Reply text cannot be empty');
     }
 
     const movie = await Movie.findById(id);
@@ -419,35 +416,34 @@ const adminReplyReview = asyncHandler(async (req, res) => {
       throw new Error('Review not found');
     }
 
-    review.adminReply = reply.trim(); 
+    review.adminReply = reply.trim();
 
     await movie.save();
 
     const replyResponse = {
-        message: 'Admin reply added',
-        review: {
-            ...review.toObject(),
-            movieId: movie._id, 
-            reviewId: review._id 
-        }
+      message: 'Admin reply added',
+      review: {
+        ...review.toObject(),
+        movieId: movie._id,
+        reviewId: review._id
+      }
     };
 
     res.status(201).json(replyResponse);
   } catch (error) {
-     res.status(res.statusCode >= 400 ? res.statusCode : 400).json({ message: error.message });
+    res.status(res.statusCode >= 400 ? res.statusCode : 400).json({ message: error.message });
   }
 });
 
-// Generate sitemap - Updated section only
+// Generate sitemap
 const generateSitemap = asyncHandler(async (req, res) => {
   try {
     const movies = await Movie.find({}).select('_id name updatedAt');
     const categories = await Categories.find({}).select('title');
-    
+
     let sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n';
     sitemap += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
-    
-    // Static pages - Updated with additional pages for better SEO
+
     const staticPages = [
       { url: 'https://www.moviefrost.com/', priority: '1.0', changefreq: 'daily' },
       { url: 'https://www.moviefrost.com/#popular', priority: '0.8', changefreq: 'daily' },
@@ -455,7 +451,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
       { url: 'https://www.moviefrost.com/about-us', priority: '0.7', changefreq: 'weekly' },
       { url: 'https://www.moviefrost.com/contact-us', priority: '0.7', changefreq: 'weekly' },
     ];
-    
+
     staticPages.forEach(page => {
       sitemap += `  <url>\n`;
       sitemap += `    <loc>${page.url}</loc>\n`;
@@ -463,8 +459,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `    <priority>${page.priority}</priority>\n`;
       sitemap += `  </url>\n`;
     });
-    
-    // Movie pages
+
     movies.forEach(movie => {
       sitemap += `  <url>\n`;
       sitemap += `    <loc>https://www.moviefrost.com/movie/${movie._id}</loc>\n`;
@@ -473,8 +468,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `    <priority>0.8</priority>\n`;
       sitemap += `  </url>\n`;
     });
-    
-    // Category pages
+
     categories.forEach(category => {
       sitemap += `  <url>\n`;
       sitemap += `    <loc>https://www.moviefrost.com/movies?category=${encodeURIComponent(category.title)}</loc>\n`;
@@ -482,33 +476,213 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `    <priority>0.7</priority>\n`;
       sitemap += `  </url>\n`;
     });
-    
+
     sitemap += '</urlset>';
-    
+
     res.header('Content-Type', 'application/xml');
     res.send(sitemap);
-    
-    // ──♻️ Ping search engines if we are running in production ───────────
+
     try {
       if (process.env.NODE_ENV === 'production') {
         const encoded = encodeURIComponent('https://www.moviefrost.com/sitemap.xml');
-        // Google
         fetch('https://www.google.com/ping?sitemap=' + encoded).catch(() => {});
-        // Bing  
         fetch('https://www.bing.com/ping?sitemap=' + encoded).catch(() => {});
       }
     } catch (_) {}
-    
+
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
-// ************ NEW BULK UPDATE CONTROLLER ************
-// @desc    Update MANY movies in one request
-// @route   PUT /api/movies/bulk
+// ====== NEW BULK EXACT UPDATE (by name + type, optional _id) ======
+// @desc    Bulk update by EXACT name and type (or by _id if provided)
+// @route   PUT /api/movies/bulk-exact
 // @access  Private/Admin
-const bulkUpdateMovies = asyncHandler(async (req, res) => {
+const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
+  const { movies } = req.body;
+  if (!Array.isArray(movies) || movies.length === 0) {
+    res.status(400);
+    throw new Error('Request body must contain a non-empty "movies" array');
+  }
+
+  const allowedCommon = [
+    'type', 'name', 'desc', 'titleImage', 'image', 'category',
+    'browseBy', 'thumbnailInfo', 'language', 'year', 'time',
+    'rate', 'numberOfReviews', 'casts',
+    'seoTitle', 'seoDescription', 'seoKeywords',
+    'latest', 'previousHit', 'userId'
+  ];
+  const allowedMovieOnly = ['video', 'videoUrl2', 'downloadUrl'];
+  const allowedWebOnly = ['episodes'];
+
+  // Build bulkWrite operations
+  const operations = [];
+  const errors = [];
+
+  for (let i = 0; i < movies.length; i++) {
+    const item = movies[i] || {};
+    try {
+      const { _id, name, type } = item;
+
+      if (!type || !['Movie', 'WebSeries'].includes(type)) {
+        throw new Error('Each item must include a valid "type" of "Movie" or "WebSeries"');
+      }
+      if (!name || typeof name !== 'string') {
+        throw new Error('Each item must include a non-empty "name" for exact match');
+      }
+
+      // Validate flags
+      if (item.latest === true && item.previousHit === true) {
+        throw new Error('Movie/WebSeries cannot be both Latest and PreviousHit');
+      }
+
+      // Construct filter (prefer _id if provided, else exact name+type)
+      const filter = _id
+        ? { _id }
+        : { name: name, type: type };
+
+      // Build $set and $unset based on type and whitelist
+      const updateSet = {};
+      const updateUnset = {};
+
+      // Common fields
+      allowedCommon.forEach((field) => {
+        if (field in item && field !== 'type') {
+          updateSet[field] = item[field];
+        }
+      });
+
+      if (type === 'Movie') {
+        // Movie-specific fields
+        allowedMovieOnly.forEach((f) => {
+          if (f in item) updateSet[f] = item[f];
+        });
+        // ensure series-only fields are removed
+        updateUnset['episodes'] = '';
+      } else {
+        // WebSeries: episodes allowed
+        allowedWebOnly.forEach((f) => {
+          if (f in item) updateSet[f] = item[f];
+        });
+        // ensure movie-only fields are removed
+        updateUnset['video'] = '';
+        updateUnset['videoUrl2'] = '';
+        updateUnset['downloadUrl'] = '';
+      }
+
+      // Exclude reviews changes from bulk update if present in payload accidentally
+      // (we never update "reviews" via this endpoint)
+      if ('reviews' in item) {
+        // ignore silently
+      }
+
+      // Create update op
+      const updateDoc = { $set: updateSet };
+      if (Object.keys(updateUnset).length) {
+        updateDoc.$unset = updateUnset;
+      }
+
+      operations.push({
+        updateMany: {
+          filter,
+          update: updateDoc,
+          upsert: false
+        }
+      });
+    } catch (err) {
+      errors.push({
+        index: i,
+        name: item?.name || null,
+        type: item?.type || null,
+        error: err.message || 'Unknown error',
+      });
+    }
+  }
+
+  if (operations.length === 0) {
+    return res.status(400).json({
+      message: 'No valid updates to apply. See "errors" for details.',
+      errorsCount: errors.length,
+      errors,
+    });
+  }
+
+  const result = await Movie.bulkWrite(operations, { ordered: false });
+
+  res.status(200).json({
+    message: 'Bulk exact update executed',
+    matched: result.matchedCount ?? result.result?.nMatched ?? 0,
+    modified: result.modifiedCount ?? result.result?.nModified ?? 0,
+    upserted: result.upsertedCount ?? 0,
+    errorsCount: errors.length,
+    errors,
+  });
+});
+
+// ====== NEW BULK DELETE (by name + type, optional _id) ======
+// @desc    Bulk delete by EXACT name and type (or by _id if provided)
+// @route   POST /api/movies/bulk-delete
+// @access  Private/Admin
+const bulkDeleteByName = asyncHandler(async (req, res) => {
+  const { movies } = req.body;
+  if (!Array.isArray(movies) || movies.length === 0) {
+    res.status(400);
+    throw new Error('Request body must contain a non-empty "movies" array');
+  }
+
+  const filters = [];
+  const errors = [];
+
+  for (let i = 0; i < movies.length; i++) {
+    const item = movies[i] || {};
+    try {
+      const { _id, name, type } = item;
+
+      if (_id) {
+        filters.push({ _id });
+        continue;
+      }
+
+      if (!name || typeof name !== 'string') {
+        throw new Error('Each item must include a non-empty "name" for exact match');
+      }
+      if (!type || !['Movie', 'WebSeries'].includes(type)) {
+        throw new Error('Each item must include a valid "type" of "Movie" or "WebSeries"');
+      }
+
+      filters.push({ name: name, type: type });
+    } catch (err) {
+      errors.push({
+        index: i,
+        name: item?.name || null,
+        type: item?.type || null,
+        error: err.message || 'Unknown error',
+      });
+    }
+  }
+
+  if (filters.length === 0) {
+    return res.status(400).json({
+      message: 'No valid delete filters found. See "errors" for details.',
+      errorsCount: errors.length,
+      errors,
+    });
+  }
+
+  // Delete only matching docs – no others impacted
+  const deleteResult = await Movie.deleteMany({ $or: filters });
+
+  res.status(200).json({
+    message: 'Bulk exact delete executed',
+    deletedCount: deleteResult.deletedCount || 0,
+    errorsCount: errors.length,
+    errors,
+  });
+});
+
+// ====== BULK CREATE (unchanged) ======
+const bulkCreateMovies = asyncHandler(async (req, res) => {
   const { movies } = req.body;
 
   if (!Array.isArray(movies) || movies.length === 0) {
@@ -516,57 +690,118 @@ const bulkUpdateMovies = asyncHandler(async (req, res) => {
     throw new Error('Request body must contain a non-empty "movies" array');
   }
 
-  // Build bulkWrite() operations
-  const operations = movies.map((item) => {
-    const { _id, latest, previousHit, type, video, videoUrl2, episodes, ...rest } = item;
+  const docsToInsert = [];
+  const errors = [];
 
-    if (!_id) return null; // skip items missing _id
+  for (let i = 0; i < movies.length; i++) {
+    const item = movies[i] || {};
+    try {
+      const {
+        type,
+        name,
+        desc,
+        image,
+        titleImage,
+        rate,
+        numberOfReviews,
+        category,
+        browseBy,
+        thumbnailInfo,
+        time,
+        language,
+        year,
+        video,
+        videoUrl2,
+        episodes,
+        casts,
+        downloadUrl,
+        seoTitle,
+        seoDescription,
+        seoKeywords,
+        latest = false,
+        previousHit = false,
+      } = item;
 
-    // Simple validation – keep the same business rules
-    if (latest !== undefined && previousHit !== undefined && latest && previousHit) {
-      throw new Error(`Movie ${_id} cannot be both Latest and PreviousHit`);
-    }
-
-    const updateDoc = { ...rest }; // copy remaining fields
-
-    // Flags
-    if (latest !== undefined) updateDoc.latest = !!latest;
-    if (previousHit !== undefined) updateDoc.previousHit = !!previousHit;
-
-    // Handle Movie ⭤ WebSeries specifics
-    if (type === 'Movie') {
-      if (video !== undefined) updateDoc.video = video;
-      if (videoUrl2 !== undefined) updateDoc.videoUrl2 = videoUrl2;
-      updateDoc.episodes = undefined; // clear episodes
-    } else if (type === 'WebSeries') {
-      if (Array.isArray(episodes)) updateDoc.episodes = episodes;
-      updateDoc.video = undefined;
-      updateDoc.videoUrl2 = undefined;
-    }
-
-    return {
-      updateOne: {
-        filter: { _id },
-        update: { $set: updateDoc }
+      if (!type || !name || !desc || !image || !titleImage || !category || !browseBy || !time || !language || !year) {
+        throw new Error('Missing required fields');
       }
-    };
-  }).filter(Boolean);
 
-  if (operations.length === 0) {
-    res.status(400);
-    throw new Error('No valid movie updates found in the payload');
+      if (latest && previousHit) {
+        throw new Error('Movie cannot be both Latest and PreviousHit');
+      }
+
+      const movieData = {
+        type,
+        name,
+        desc,
+        image,
+        titleImage,
+        rate: rate || 0,
+        numberOfReviews: numberOfReviews || 0,
+        category,
+        browseBy,
+        thumbnailInfo: thumbnailInfo || '',
+        time,
+        language,
+        year,
+        userId: req.user?._id || null,
+        casts: casts || [],
+        seoTitle: seoTitle || name,
+        seoDescription: seoDescription || desc.substring(0, 155),
+        seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
+        viewCount: 0,
+        latest: !!latest,
+        previousHit: !!previousHit,
+      };
+
+      if (type === 'Movie') {
+        if (!video) {
+          throw new Error('Movie video URL (server1) is required');
+        }
+        if (!videoUrl2) {
+          throw new Error('Second server (videoUrl2) is required');
+        }
+        movieData.video = video;
+        movieData.videoUrl2 = videoUrl2;
+        if (downloadUrl) {
+          movieData.downloadUrl = downloadUrl;
+        }
+      } else if (type === 'WebSeries') {
+        if (!episodes || !Array.isArray(episodes) || episodes.length === 0) {
+          throw new Error('Episodes are required for web series');
+        }
+        movieData.episodes = episodes;
+      } else {
+        throw new Error('Invalid type');
+      }
+
+      docsToInsert.push(movieData);
+    } catch (err) {
+      errors.push({
+        index: i,
+        name: item.name || null,
+        error: err.message || 'Unknown error',
+      });
+    }
   }
 
-  const result = await Movie.bulkWrite(operations, { ordered: false });
+  if (!docsToInsert.length) {
+    res.status(400);
+    throw new Error(
+      'No valid movies to insert. Check "errors" array for details in your payload.'
+    );
+  }
 
-  res.status(200).json({
-    message: 'Bulk update executed',
-    matched: result.matchedCount,
-    modified: result.modifiedCount,
-    upserted: result.upsertedCount
+  const inserted = await Movie.insertMany(docsToInsert, { ordered: false });
+
+  res.status(201).json({
+    message: 'Bulk create executed',
+    insertedCount: inserted.length,
+    errorsCount: errors.length,
+    errors,
+    inserted,
   });
 });
-
 
 export {
   importMovies,
@@ -580,9 +815,11 @@ export {
   deleteAllMovies,
   createMovie,
   getDistinctBrowseBy,
-  getLatestMovies, 
+  getLatestMovies,
   adminReplyReview,
   generateSitemap,
-  bulkUpdateMovies // NEW EXPORT
+  // removed old bulkUpdateMovies
+  bulkExactUpdateMovies,   // NEW
+  bulkDeleteByName,        // NEW
+  bulkCreateMovies,        // keep
 };
-
