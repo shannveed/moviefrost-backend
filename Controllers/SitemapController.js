@@ -8,7 +8,7 @@ const FRONTEND_BASE_URL =
 
 // Small helper to HTML-escape values in XML (just in case)
 const escapeXml = (unsafe = '') =>
-  unsafe
+  String(unsafe || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -65,9 +65,13 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
 
     // Movie detail pages
     for (const movie of movies) {
+      const lastmod = movie.updatedAt
+        ? new Date(movie.updatedAt).toISOString()
+        : undefined;
+
       urls.push({
         loc: `${FRONTEND_BASE_URL}/movie/${movie._id}`,
-        lastmod: movie.updatedAt ? movie.updatedAt.toISOString() : undefined,
+        lastmod,
         changefreq: 'weekly',
         priority: '0.8',
       });
@@ -76,11 +80,15 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     // Category listing pages
     for (const cat of categories) {
       const title = cat.title || '';
+      const lastmod = cat.updatedAt
+        ? new Date(cat.updatedAt).toISOString()
+        : undefined;
+
       urls.push({
         loc: `${FRONTEND_BASE_URL}/movies?category=${encodeURIComponent(
           title
         )}`,
-        lastmod: cat.updatedAt ? cat.updatedAt.toISOString() : undefined,
+        lastmod,
         changefreq: 'weekly',
         priority: '0.7',
       });
@@ -95,8 +103,8 @@ ${urls
     return `  <url>
     <loc>${escapeXml(u.loc)}</loc>
     ${u.lastmod ? `<lastmod>${escapeXml(u.lastmod)}</lastmod>` : ''}
-    <changefreq>${u.changefreq}</changefreq>
-    <priority>${u.priority}</priority>
+    <changefreq>${escapeXml(u.changefreq)}</changefreq>
+    <priority>${escapeXml(u.priority)}</priority>
   </url>`;
   })
   .join('\n')}
@@ -137,7 +145,7 @@ export const generateVideoSitemap = asyncHandler(async (_req, res) => {
       video: { $ne: null },
     })
       .select(
-        '_id name desc image titleImage createdAt updatedAt video downloadUrl time'
+        '_id name desc image titleImage createdAt updatedAt video downloadUrl time category seoTitle seoDescription seoKeywords viewCount'
       )
       .lean();
 
@@ -150,20 +158,38 @@ ${movies
   .map((m) => {
     const pageUrl = `${FRONTEND_BASE_URL}/watch/${m._id}`;
     const contentUrl = m.downloadUrl || m.video || pageUrl;
-    const thumb = m.image || m.titleImage || '';
-    const title = m.name || 'Movie';
-    const description =
-      (m.desc || '').substring(0, 200) ||
+
+    const rawThumb = m.image || m.titleImage || `${FRONTEND_BASE_URL}/og-image.jpg`;
+    const thumb =
+      typeof rawThumb === 'string' && rawThumb.startsWith('http')
+        ? rawThumb
+        : `${FRONTEND_BASE_URL}${
+            rawThumb.startsWith('/') ? '' : '/'
+          }${rawThumb}`;
+
+    const title = m.seoTitle || m.name || 'Movie';
+    const descriptionRaw =
+      (m.seoDescription || m.desc || '').substring(0, 2048) ||
       'Watch free movies and web series online on MovieFrost.';
-    const uploadDate = (m.createdAt || m.updatedAt || new Date()).toISOString();
+    const uploadDate = (m.createdAt || m.updatedAt
+      ? new Date(m.createdAt || m.updatedAt).toISOString()
+      : new Date().toISOString());
     const durationSeconds = m.time ? m.time * 60 : undefined;
+
+    const tags =
+      typeof m.seoKeywords === 'string'
+        ? m.seoKeywords
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean)
+        : [];
 
     return `  <url>
     <loc>${escapeXml(pageUrl)}</loc>
     <video:video>
       <video:thumbnail_loc>${escapeXml(thumb)}</video:thumbnail_loc>
       <video:title>${escapeXml(title)}</video:title>
-      <video:description>${escapeXml(description)}</video:description>
+      <video:description>${escapeXml(descriptionRaw)}</video:description>
       <video:content_loc>${escapeXml(contentUrl)}</video:content_loc>
       <video:player_loc>${escapeXml(pageUrl)}</video:player_loc>
       <video:publication_date>${escapeXml(uploadDate)}</video:publication_date>
@@ -172,6 +198,19 @@ ${movies
           ? `<video:duration>${durationSeconds}</video:duration>`
           : ''
       }
+      ${
+        m.category
+          ? `<video:category>${escapeXml(m.category)}</video:category>`
+          : ''
+      }
+      ${
+        tags.length
+          ? tags
+              .map((t) => `      <video:tag>${escapeXml(t)}</video:tag>`)
+              .join('\n')
+          : ''
+      }
+      <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>`;
   })

@@ -155,9 +155,9 @@ const moviesSchema = mongoose.Schema(
 );
 
 // Add text index for better search
-moviesSchema.index({ 
-  name: 'text', 
-  desc: 'text', 
+moviesSchema.index({
+  name: 'text',
+  desc: 'text',
   category: 'text',
   language: 'text',
   seoKeywords: 'text'
@@ -171,3 +171,4 @@ moviesSchema.index({ viewCount: -1 });
 moviesSchema.index({ latest: -1, previousHit: 1, createdAt: -1 });
 
 export default mongoose.model('Movie', moviesSchema);
+
