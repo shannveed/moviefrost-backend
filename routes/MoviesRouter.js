@@ -52,6 +52,21 @@ router.post(
 // Bulk create
 router.post('/bulk', protect, admin, moviesController.bulkCreateMovies);
 
+// NEW: admin ordering
+router.post(
+  '/admin/reorder-page',
+  protect,
+  admin,
+  moviesController.reorderMoviesInPage
+);
+
+router.post(
+  '/admin/move-to-page',
+  protect,
+  admin,
+  moviesController.moveMoviesToPage
+);
+
 // Single movie admin routes
 router.put('/:id', protect, admin, moviesController.updateMovie);
 router.delete('/:id', protect, admin, moviesController.deleteMovie);

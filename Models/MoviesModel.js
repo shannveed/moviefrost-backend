@@ -148,6 +148,12 @@ const moviesSchema = mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // NEW: manual ordering index for admin
+    orderIndex: {
+      type: Number,
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,
@@ -160,7 +166,7 @@ moviesSchema.index({
   desc: 'text',
   category: 'text',
   language: 'text',
-  seoKeywords: 'text'
+  seoKeywords: 'text',
 });
 
 // Add compound indexes for common queries
@@ -169,6 +175,7 @@ moviesSchema.index({ browseBy: 1, createdAt: -1 });
 moviesSchema.index({ rate: -1 });
 moviesSchema.index({ viewCount: -1 });
 moviesSchema.index({ latest: -1, previousHit: 1, createdAt: -1 });
+// Also index orderIndex for ordering
+moviesSchema.index({ orderIndex: 1 });
 
 export default mongoose.model('Movie', moviesSchema);
-

@@ -4,7 +4,40 @@ import Movie from '../Models/MoviesModel.js';
 import Categories from '../Models/CategoriesModel.js';
 import asyncHandler from 'express-async-handler';
 
-// ************ PUBLIC CONTROLLERS ************
+// Constant for page limit
+const REORDER_PAGE_LIMIT = 50;
+
+/* ================================================================== */
+/*                HELPER: ensure orderIndex is initialized            */
+/* ================================================================== */
+
+const ensureOrderIndexes = async () => {
+  // Check if there is any movie without a valid orderIndex
+  const missing = await Movie.countDocuments({
+    $or: [{ orderIndex: { $exists: false } }, { orderIndex: null }],
+  });
+
+  if (!missing) return;
+
+  // Initialize orderIndex based on current sort (latest, previousHit, createdAt)
+  const allMovies = await Movie.find({})
+    .sort({ latest: -1, previousHit: 1, createdAt: -1 })
+    .select('_id')
+    .lean();
+
+  const bulkOps = allMovies.map((m, idx) => ({
+    updateOne: {
+      filter: { _id: m._id },
+      update: { $set: { orderIndex: idx + 1 } },
+    },
+  }));
+
+  if (bulkOps.length) {
+    await Movie.bulkWrite(bulkOps, { ordered: true });
+  }
+};
+
+// * PUBLIC CONTROLLERS *
 const importMovies = asyncHandler(async (req, res) => {
   await Movie.deleteMany({});
   const movies = await Movie.insertMany(MoviesData);
@@ -26,55 +59,54 @@ const getMovies = asyncHandler(async (req, res) => {
     };
 
     const page = Number(req.query.pageNumber) || 1;
-    const limit = 50;
+    const limit = REORDER_PAGE_LIMIT;
     const skip = (page - 1) * limit;
 
     // Split into two buckets
     const normalFilter = { ...baseFilter, previousHit: { $ne: true } };
     const prevHitFilter = { ...baseFilter, previousHit: true };
 
-    const sortLatest = { latest: -1, createdAt: -1 };
-    const sortPrevHits = { createdAt: -1 };
+    // UPDATED: use orderIndex to control manual order
+    const sortLatest = { latest: -1, orderIndex: 1, createdAt: -1 };
+    const sortPrevHits = { orderIndex: 1, createdAt: -1 };
 
     const normalCount = await Movie.countDocuments(normalFilter);
-    const totalCount = normalCount + await Movie.countDocuments(prevHitFilter);
+    const totalCount = normalCount + (await Movie.countDocuments(prevHitFilter));
 
     let movies = [];
 
     if (skip < normalCount) {
-      const normalRemaining = Math.min(limit, normalCount - skip);
+      const remainingNormal = normalCount - skip;
+      const takeFromNormal = Math.min(limit, remainingNormal);
+      const takeFromPrevHits = limit - takeFromNormal;
+
       const normalMovies = await Movie.find(normalFilter)
         .sort(sortLatest)
         .skip(skip)
-        .limit(normalRemaining)
-        .select('-reviews');
+        .limit(takeFromNormal);
 
-      movies = [...normalMovies];
-
-      if (movies.length < limit) {
-        const slotsLeft = limit - movies.length;
+      if (takeFromPrevHits > 0) {
         const prevHitMovies = await Movie.find(prevHitFilter)
           .sort(sortPrevHits)
-          .limit(slotsLeft)
-          .select('-reviews');
-
-        movies = [...movies, ...prevHitMovies];
+          .limit(takeFromPrevHits);
+        movies = [...normalMovies, ...prevHitMovies];
+      } else {
+        movies = normalMovies;
       }
     } else {
-      const prevHitSkip = skip - normalCount;
-      const prevHitMovies = await Movie.find(prevHitFilter)
+      const adjustedSkip = skip - normalCount;
+      movies = await Movie.find(prevHitFilter)
         .sort(sortPrevHits)
-        .skip(prevHitSkip)
-        .limit(limit)
-        .select('-reviews');
-
-      movies = prevHitMovies;
+        .skip(adjustedSkip)
+        .limit(limit);
     }
+
+    const pages = Math.ceil(totalCount / limit) || 1;
 
     res.json({
       movies,
       page,
-      pages: Math.ceil(totalCount / limit),
+      pages,
       totalMovies: totalCount,
     });
   } catch (error) {
@@ -84,7 +116,10 @@ const getMovies = asyncHandler(async (req, res) => {
 
 const getMovieById = asyncHandler(async (req, res) => {
   try {
-    const movie = await Movie.findById(req.params.id).populate('reviews.userId', 'fullName image');
+    const movie = await Movie.findById(req.params.id).populate(
+      'reviews.userId',
+      'fullName image'
+    );
     if (movie) {
       movie.viewCount = (movie.viewCount || 0) + 1;
       await movie.save();
@@ -115,7 +150,7 @@ const getRandomMovies = asyncHandler(async (req, res) => {
   try {
     const movies = await Movie.aggregate([
       { $sample: { size: 8 } },
-      { $project: { reviews: 0 } }
+      { $project: { reviews: 0 } },
     ]);
     res.json(movies);
   } catch (error) {
@@ -152,7 +187,10 @@ const createMovieReview = asyncHandler(async (req, res) => {
       await movie.save();
 
       const newReview = movie.reviews[movie.reviews.length - 1];
-      const reviewWithMovieName = { ...newReview.toObject(), movieName: movie.name };
+      const reviewWithMovieName = {
+        ...newReview.toObject(),
+        movieName: movie.name,
+      };
 
       res.status(201).json({
         message: 'Review added',
@@ -202,7 +240,12 @@ const updateMovie = asyncHandler(async (req, res) => {
       throw new Error('Movie not found');
     }
 
-    if (latest !== undefined && previousHit !== undefined && latest && previousHit) {
+    if (
+      latest !== undefined &&
+      previousHit !== undefined &&
+      latest &&
+      previousHit
+    ) {
       res.status(400);
       throw new Error('Movie cannot be both Latest and PreviousHit');
     }
@@ -213,10 +256,14 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.image = image || movie.image;
     movie.titleImage = titleImage || movie.titleImage;
     movie.rate = rate !== undefined ? rate : movie.rate;
-    movie.numberOfReviews = numberOfReviews !== undefined ? numberOfReviews : movie.numberOfReviews;
+    movie.numberOfReviews =
+      numberOfReviews !== undefined
+        ? numberOfReviews
+        : movie.numberOfReviews;
     movie.category = category || movie.category;
     movie.browseBy = browseBy || movie.browseBy;
-    movie.thumbnailInfo = thumbnailInfo !== undefined ? thumbnailInfo : movie.thumbnailInfo;
+    movie.thumbnailInfo =
+      thumbnailInfo !== undefined ? thumbnailInfo : movie.thumbnailInfo;
     movie.time = time || movie.time;
     movie.language = language || movie.language;
     movie.year = year || movie.year;
@@ -225,12 +272,14 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.seoDescription = seoDescription || movie.seoDescription;
     movie.seoKeywords = seoKeywords || movie.seoKeywords;
     movie.latest = latest !== undefined ? !!latest : movie.latest;
-    movie.previousHit = previousHit !== undefined ? !!previousHit : movie.previousHit;
+    movie.previousHit =
+      previousHit !== undefined ? !!previousHit : movie.previousHit;
 
     if (type === 'Movie') {
       movie.video = video || movie.video;
       movie.videoUrl2 = videoUrl2 || movie.videoUrl2;
-      movie.downloadUrl = downloadUrl !== undefined ? downloadUrl : movie.downloadUrl;
+      movie.downloadUrl =
+        downloadUrl !== undefined ? downloadUrl : movie.downloadUrl;
       movie.episodes = undefined;
     } else if (type === 'WebSeries') {
       movie.episodes = episodes || movie.episodes;
@@ -303,7 +352,18 @@ const createMovie = asyncHandler(async (req, res) => {
       previousHit = false,
     } = req.body;
 
-    if (!type || !name || !desc || !image || !titleImage || !category || !browseBy || !time || !language || !year) {
+    if (
+      !type ||
+      !name ||
+      !desc ||
+      !image ||
+      !titleImage ||
+      !category ||
+      !browseBy ||
+      !time ||
+      !language ||
+      !year
+    ) {
       res.status(400);
       throw new Error('Missing required fields');
     }
@@ -312,6 +372,13 @@ const createMovie = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error('Movie cannot be both Latest and PreviousHit');
     }
+
+    // Get max orderIndex to place new movie at end initially
+    const maxOrderDoc = await Movie.findOne({})
+      .sort({ orderIndex: -1 })
+      .select('orderIndex')
+      .lean();
+    const newOrderIndex = (maxOrderDoc?.orderIndex || 0) + 1;
 
     const movieData = {
       type,
@@ -335,6 +402,7 @@ const createMovie = asyncHandler(async (req, res) => {
       viewCount: 0,
       latest: !!latest,
       previousHit: !!previousHit,
+      orderIndex: newOrderIndex,
     };
 
     if (type === 'Movie') {
@@ -365,9 +433,10 @@ const createMovie = asyncHandler(async (req, res) => {
     const movie = new Movie(movieData);
     const createdMovie = await movie.save();
     res.status(201).json(createdMovie);
-
   } catch (error) {
-    res.status(res.statusCode >= 400 ? res.statusCode : 400).json({ message: error.message });
+    res
+      .status(res.statusCode >= 400 ? res.statusCode : 400)
+      .json({ message: error.message });
   }
 });
 
@@ -385,7 +454,9 @@ const getLatestMovies = asyncHandler(async (_req, res) => {
 
 const getDistinctBrowseBy = asyncHandler(async (req, res) => {
   try {
-    const distinctValues = await Movie.distinct('browseBy', { browseBy: { $nin: [null, ""] } });
+    const distinctValues = await Movie.distinct('browseBy', {
+      browseBy: { $nin: [null, ''] },
+    });
     res.status(200).json(distinctValues);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -425,13 +496,15 @@ const adminReplyReview = asyncHandler(async (req, res) => {
       review: {
         ...review.toObject(),
         movieId: movie._id,
-        reviewId: review._id
-      }
+        reviewId: review._id,
+      },
     };
 
     res.status(201).json(replyResponse);
   } catch (error) {
-    res.status(res.statusCode >= 400 ? res.statusCode : 400).json({ message: error.message });
+    res
+      .status(res.statusCode >= 400 ? res.statusCode : 400)
+      .json({ message: error.message });
   }
 });
 
@@ -442,17 +515,38 @@ const generateSitemap = asyncHandler(async (req, res) => {
     const categories = await Categories.find({}).select('title');
 
     let sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n';
-    sitemap += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+    sitemap +=
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
 
     const staticPages = [
-      { url: 'https://www.moviefrost.com/', priority: '1.0', changefreq: 'daily' },
-      { url: 'https://www.moviefrost.com/#popular', priority: '0.8', changefreq: 'daily' },
-      { url: 'https://www.moviefrost.com/movies', priority: '0.9', changefreq: 'daily' },
-      { url: 'https://www.moviefrost.com/about-us', priority: '0.7', changefreq: 'weekly' },
-      { url: 'https://www.moviefrost.com/contact-us', priority: '0.7', changefreq: 'weekly' },
+      {
+        url: 'https://www.moviefrost.com/',
+        priority: '1.0',
+        changefreq: 'daily',
+      },
+      {
+        url: 'https://www.moviefrost.com/#popular',
+        priority: '0.8',
+        changefreq: 'daily',
+      },
+      {
+        url: 'https://www.moviefrost.com/movies',
+        priority: '0.9',
+        changefreq: 'daily',
+      },
+      {
+        url: 'https://www.moviefrost.com/about-us',
+        priority: '0.7',
+        changefreq: 'weekly',
+      },
+      {
+        url: 'https://www.moviefrost.com/contact-us',
+        priority: '0.7',
+        changefreq: 'weekly',
+      },
     ];
 
-    staticPages.forEach(page => {
+    staticPages.forEach((page) => {
       sitemap += `  <url>\n`;
       sitemap += `    <loc>${page.url}</loc>\n`;
       sitemap += `    <changefreq>${page.changefreq}</changefreq>\n`;
@@ -460,7 +554,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `  </url>\n`;
     });
 
-    movies.forEach(movie => {
+    movies.forEach((movie) => {
       sitemap += `  <url>\n`;
       sitemap += `    <loc>https://www.moviefrost.com/movie/${movie._id}</loc>\n`;
       sitemap += `    <lastmod>${movie.updatedAt.toISOString()}</lastmod>\n`;
@@ -469,9 +563,11 @@ const generateSitemap = asyncHandler(async (req, res) => {
       sitemap += `  </url>\n`;
     });
 
-    categories.forEach(category => {
+    categories.forEach((category) => {
       sitemap += `  <url>\n`;
-      sitemap += `    <loc>https://www.moviefrost.com/movies?category=${encodeURIComponent(category.title)}</loc>\n`;
+      sitemap += `    <loc>https://www.moviefrost.com/movies?category=${encodeURIComponent(
+        category.title
+      )}</loc>\n`;
       sitemap += `    <changefreq>weekly</changefreq>\n`;
       sitemap += `    <priority>0.7</priority>\n`;
       sitemap += `  </url>\n`;
@@ -484,21 +580,21 @@ const generateSitemap = asyncHandler(async (req, res) => {
 
     try {
       if (process.env.NODE_ENV === 'production') {
-        const encoded = encodeURIComponent('https://www.moviefrost.com/sitemap.xml');
-        fetch('https://www.google.com/ping?sitemap=' + encoded).catch(() => {});
+        const encoded = encodeURIComponent(
+          'https://www.moviefrost.com/sitemap.xml'
+        );
+        fetch('https://www.google.com/ping?sitemap=' + encoded).catch(
+          () => {}
+        );
         fetch('https://www.bing.com/ping?sitemap=' + encoded).catch(() => {});
       }
     } catch (_) {}
-
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
-// ====== NEW BULK EXACT UPDATE (by name + type, optional _id) ======
-// @desc    Bulk update by EXACT name and type (or by _id if provided)
-// @route   PUT /api/movies/bulk-exact
-// @access  Private/Admin
+// ====== BULK EXACT UPDATE (by name + type, optional _id) ======
 const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
   const { movies } = req.body;
   if (!Array.isArray(movies) || movies.length === 0) {
@@ -507,46 +603,57 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
   }
 
   const allowedCommon = [
-    'type', 'name', 'desc', 'titleImage', 'image', 'category',
-    'browseBy', 'thumbnailInfo', 'language', 'year', 'time',
-    'rate', 'numberOfReviews', 'casts',
-    'seoTitle', 'seoDescription', 'seoKeywords',
-    'latest', 'previousHit', 'userId'
+    'type',
+    'name',
+    'desc',
+    'titleImage',
+    'image',
+    'category',
+    'browseBy',
+    'thumbnailInfo',
+    'language',
+    'year',
+    'time',
+    'rate',
+    'numberOfReviews',
+    'casts',
+    'seoTitle',
+    'seoDescription',
+    'seoKeywords',
+    'latest',
+    'previousHit',
+    'userId',
   ];
   const allowedMovieOnly = ['video', 'videoUrl2', 'downloadUrl'];
   const allowedWebOnly = ['episodes'];
 
-  // Build bulkWrite operations
   const operations = [];
   const errors = [];
 
   for (let i = 0; i < movies.length; i++) {
-    const item = movies[i] || {};
+    const item = movies[i];
     try {
-      const { _id, name, type } = item;
+      const { name, type, _id } = item;
 
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        throw new Error('Missing or invalid "name" field');
+      }
       if (!type || !['Movie', 'WebSeries'].includes(type)) {
-        throw new Error('Each item must include a valid "type" of "Movie" or "WebSeries"');
-      }
-      if (!name || typeof name !== 'string') {
-        throw new Error('Each item must include a non-empty "name" for exact match');
-      }
-
-      // Validate flags
-      if (item.latest === true && item.previousHit === true) {
-        throw new Error('Movie/WebSeries cannot be both Latest and PreviousHit');
+        throw new Error(
+          'Missing or invalid "type" field (must be "Movie" or "WebSeries")'
+        );
       }
 
-      // Construct filter (prefer _id if provided, else exact name+type)
-      const filter = _id
-        ? { _id }
-        : { name: name, type: type };
+      let filter;
+      if (_id) {
+        filter = { _id };
+      } else {
+        filter = { name: name.trim(), type };
+      }
 
-      // Build $set and $unset based on type and whitelist
-      const updateSet = {};
+      const updateSet = { type };
       const updateUnset = {};
 
-      // Common fields
       allowedCommon.forEach((field) => {
         if (field in item && field !== 'type') {
           updateSet[field] = item[field];
@@ -554,30 +661,19 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
       });
 
       if (type === 'Movie') {
-        // Movie-specific fields
         allowedMovieOnly.forEach((f) => {
           if (f in item) updateSet[f] = item[f];
         });
-        // ensure series-only fields are removed
         updateUnset['episodes'] = '';
       } else {
-        // WebSeries: episodes allowed
         allowedWebOnly.forEach((f) => {
           if (f in item) updateSet[f] = item[f];
         });
-        // ensure movie-only fields are removed
         updateUnset['video'] = '';
         updateUnset['videoUrl2'] = '';
         updateUnset['downloadUrl'] = '';
       }
 
-      // Exclude reviews changes from bulk update if present in payload accidentally
-      // (we never update "reviews" via this endpoint)
-      if ('reviews' in item) {
-        // ignore silently
-      }
-
-      // Create update op
       const updateDoc = { $set: updateSet };
       if (Object.keys(updateUnset).length) {
         updateDoc.$unset = updateUnset;
@@ -587,8 +683,8 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
         updateMany: {
           filter,
           update: updateDoc,
-          upsert: false
-        }
+          upsert: false,
+        },
       });
     } catch (err) {
       errors.push({
@@ -620,10 +716,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
   });
 });
 
-// ====== NEW BULK DELETE (by name + type, optional _id) ======
-// @desc    Bulk delete by EXACT name and type (or by _id if provided)
-// @route   POST /api/movies/bulk-delete
-// @access  Private/Admin
+// ====== BULK DELETE (by name + type, optional _id) ======
 const bulkDeleteByName = asyncHandler(async (req, res) => {
   const { movies } = req.body;
   if (!Array.isArray(movies) || movies.length === 0) {
@@ -635,23 +728,21 @@ const bulkDeleteByName = asyncHandler(async (req, res) => {
   const errors = [];
 
   for (let i = 0; i < movies.length; i++) {
-    const item = movies[i] || {};
+    const item = movies[i];
     try {
-      const { _id, name, type } = item;
+      const { name, type, _id } = item;
 
       if (_id) {
         filters.push({ _id });
-        continue;
+      } else {
+        if (!name || typeof name !== 'string' || !name.trim()) {
+          throw new Error('Missing or invalid "name" field');
+        }
+        if (!type || !['Movie', 'WebSeries'].includes(type)) {
+          throw new Error('Missing or invalid "type" field');
+        }
+        filters.push({ name: name.trim(), type });
       }
-
-      if (!name || typeof name !== 'string') {
-        throw new Error('Each item must include a non-empty "name" for exact match');
-      }
-      if (!type || !['Movie', 'WebSeries'].includes(type)) {
-        throw new Error('Each item must include a valid "type" of "Movie" or "WebSeries"');
-      }
-
-      filters.push({ name: name, type: type });
     } catch (err) {
       errors.push({
         index: i,
@@ -664,24 +755,23 @@ const bulkDeleteByName = asyncHandler(async (req, res) => {
 
   if (filters.length === 0) {
     return res.status(400).json({
-      message: 'No valid delete filters found. See "errors" for details.',
+      message: 'No valid items to delete. See "errors" for details.',
       errorsCount: errors.length,
       errors,
     });
   }
 
-  // Delete only matching docs – no others impacted
-  const deleteResult = await Movie.deleteMany({ $or: filters });
+  const result = await Movie.deleteMany({ $or: filters });
 
   res.status(200).json({
-    message: 'Bulk exact delete executed',
-    deletedCount: deleteResult.deletedCount || 0,
+    message: 'Bulk delete executed',
+    deletedCount: result.deletedCount,
     errorsCount: errors.length,
     errors,
   });
 });
 
-// ====== BULK CREATE (unchanged) ======
+// ====== BULK CREATE ======
 const bulkCreateMovies = asyncHandler(async (req, res) => {
   const { movies } = req.body;
 
@@ -693,8 +783,15 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
   const docsToInsert = [];
   const errors = [];
 
+  // Get max orderIndex
+  const maxOrderDoc = await Movie.findOne({})
+    .sort({ orderIndex: -1 })
+    .select('orderIndex')
+    .lean();
+  let currentOrderIndex = maxOrderDoc?.orderIndex || 0;
+
   for (let i = 0; i < movies.length; i++) {
-    const item = movies[i] || {};
+    const item = movies[i];
     try {
       const {
         type,
@@ -722,13 +819,26 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         previousHit = false,
       } = item;
 
-      if (!type || !name || !desc || !image || !titleImage || !category || !browseBy || !time || !language || !year) {
+      if (
+        !type ||
+        !name ||
+        !desc ||
+        !image ||
+        !titleImage ||
+        !category ||
+        !browseBy ||
+        !time ||
+        !language ||
+        !year
+      ) {
         throw new Error('Missing required fields');
       }
 
       if (latest && previousHit) {
         throw new Error('Movie cannot be both Latest and PreviousHit');
       }
+
+      currentOrderIndex++;
 
       const movieData = {
         type,
@@ -744,32 +854,28 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         time,
         language,
         year,
-        userId: req.user?._id || null,
+        userId: req.user._id,
         casts: casts || [],
         seoTitle: seoTitle || name,
         seoDescription: seoDescription || desc.substring(0, 155),
-        seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
+        seoKeywords:
+          seoKeywords || `${name}, ${category}, ${language} movies`,
         viewCount: 0,
         latest: !!latest,
         previousHit: !!previousHit,
+        orderIndex: currentOrderIndex,
       };
 
       if (type === 'Movie') {
-        if (!video) {
-          throw new Error('Movie video URL (server1) is required');
-        }
-        if (!videoUrl2) {
+        if (!video) throw new Error('Movie video URL (server1) is required');
+        if (!videoUrl2)
           throw new Error('Second server (videoUrl2) is required');
-        }
         movieData.video = video;
         movieData.videoUrl2 = videoUrl2;
-        if (downloadUrl) {
-          movieData.downloadUrl = downloadUrl;
-        }
+        if (downloadUrl) movieData.downloadUrl = downloadUrl;
       } else if (type === 'WebSeries') {
-        if (!episodes || !Array.isArray(episodes) || episodes.length === 0) {
+        if (!episodes || episodes.length === 0)
           throw new Error('Episodes are required for web series');
-        }
         movieData.episodes = episodes;
       } else {
         throw new Error('Invalid type');
@@ -779,27 +885,191 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
     } catch (err) {
       errors.push({
         index: i,
-        name: item.name || null,
+        name: item?.name || null,
+        type: item?.type || null,
         error: err.message || 'Unknown error',
       });
     }
   }
 
-  if (!docsToInsert.length) {
-    res.status(400);
-    throw new Error(
-      'No valid movies to insert. Check "errors" array for details in your payload.'
-    );
+  if (docsToInsert.length === 0) {
+    return res.status(400).json({
+      message: 'No valid movies to create. See "errors" for details.',
+      errorsCount: errors.length,
+      errors,
+    });
   }
 
-  const inserted = await Movie.insertMany(docsToInsert, { ordered: false });
+  const insertedMovies = await Movie.insertMany(docsToInsert, {
+    ordered: false,
+  });
 
   res.status(201).json({
     message: 'Bulk create executed',
-    insertedCount: inserted.length,
+    insertedCount: insertedMovies.length,
     errorsCount: errors.length,
     errors,
-    inserted,
+  });
+});
+
+/* ================================================================== */
+/*      ADMIN: drag‑and‑drop reorder within a single page             */
+/*      POST /api/movies/admin/reorder-page                           */
+/*      body: { pageNumber, orderedIds: [movieId1,...,movieIdN] }     */
+/* ================================================================== */
+
+const reorderMoviesInPage = asyncHandler(async (req, res) => {
+  const { pageNumber, orderedIds } = req.body;
+
+  const page = Number(pageNumber) || 1;
+
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+    res.status(400);
+    throw new Error('orderedIds array is required');
+  }
+
+  await ensureOrderIndexes();
+
+  // Get current global order
+  const allMovies = await Movie.find({})
+    .sort({ latest: -1, previousHit: 1, orderIndex: 1 })
+    .select('_id')
+    .lean();
+
+  const total = allMovies.length;
+  const start = (page - 1) * REORDER_PAGE_LIMIT;
+  const end = Math.min(start + REORDER_PAGE_LIMIT, total);
+
+  if (start >= total) {
+    res.status(400);
+    throw new Error('Page number out of range');
+  }
+
+  const pageSlice = allMovies.slice(start, end);
+  const pageIdsSet = new Set(pageSlice.map((m) => String(m._id)));
+
+  // Validate that orderedIds is exactly a permutation of current page IDs
+  if (
+    orderedIds.length !== pageSlice.length ||
+    !orderedIds.every((id) => pageIdsSet.has(String(id)))
+  ) {
+    res.status(400);
+    throw new Error('orderedIds must contain exactly the IDs of this page');
+  }
+
+  const idToMovie = new Map(allMovies.map((m) => [String(m._id), m]));
+
+  const newPageSlice = orderedIds.map((id) => idToMovie.get(String(id)));
+
+  // Put the new slice back into allMovies
+  for (let i = 0; i < newPageSlice.length; i++) {
+    allMovies[start + i] = newPageSlice[i];
+  }
+
+  // Reassign orderIndex for entire list
+  const bulkOps = allMovies.map((m, idx) => ({
+    updateOne: {
+      filter: { _id: m._id },
+      update: { $set: { orderIndex: idx + 1 } },
+    },
+  }));
+
+  await Movie.bulkWrite(bulkOps, { ordered: true });
+
+  res.status(200).json({ message: 'Page order updated successfully' });
+});
+
+/* ================================================================== */
+/*      ADMIN: move one or many movies to a target page               */
+/*      POST /api/movies/admin/move-to-page                           */
+/*      body: { targetPage, movieIds: [id1,id2,...] }                 */
+/* ================================================================== */
+
+const moveMoviesToPage = asyncHandler(async (req, res) => {
+  const { targetPage, movieIds } = req.body;
+
+  let page = Number(targetPage) || 1;
+  if (!Array.isArray(movieIds) || movieIds.length === 0) {
+    res.status(400);
+    throw new Error('movieIds array is required');
+  }
+
+  await ensureOrderIndexes();
+
+  // NOTE: include latest/previousHit so we can adjust flags for moved movies
+  const allMovies = await Movie.find({})
+    .sort({ latest: -1, previousHit: 1, orderIndex: 1 })
+    .select('_id latest previousHit')
+    .lean();
+
+  const idSet = new Set(movieIds.map((id) => String(id)));
+  const moved = [];
+  const remaining = [];
+
+  for (const m of allMovies) {
+    if (idSet.has(String(m._id))) {
+      moved.push(m);
+    } else {
+      remaining.push(m);
+    }
+  }
+
+  if (!moved.length) {
+    res.status(404);
+    throw new Error('Selected movies not found');
+  }
+
+  const total = remaining.length + moved.length;
+  const maxPage = Math.max(1, Math.ceil(total / REORDER_PAGE_LIMIT));
+  if (page < 1) page = 1;
+  if (page > maxPage) page = maxPage;
+
+  const insertIndex = Math.min(
+    (page - 1) * REORDER_PAGE_LIMIT,
+    remaining.length
+  );
+
+  const newOrder = [
+    ...remaining.slice(0, insertIndex),
+    ...moved,
+    ...remaining.slice(insertIndex),
+  ];
+
+  const movedIdSet = new Set(moved.map((m) => String(m._id)));
+
+  // When sending movies to page 1 we want them to actually surface
+  // at the top of the normal listing (not hidden in "previousHit").
+  // So for moved items on page 1 we:
+  //   - force previousHit = false
+  //   - force latest      = true
+  const updateFlagsForMoved = {};
+  if (page === 1) {
+    updateFlagsForMoved.previousHit = false;
+    updateFlagsForMoved.latest = true;
+  }
+
+  const bulkOps = newOrder.map((m, idx) => {
+    const updateDoc = { $set: { orderIndex: idx + 1 } };
+
+    if (movedIdSet.has(String(m._id)) && Object.keys(updateFlagsForMoved).length) {
+      updateDoc.$set = { ...updateDoc.$set, ...updateFlagsForMoved };
+    }
+
+    return {
+      updateOne: {
+        filter: { _id: m._id },
+        update: updateDoc,
+      },
+    };
+  });
+
+  await Movie.bulkWrite(bulkOps, { ordered: true });
+
+  res.status(200).json({
+    message: 'Movies moved successfully',
+    total,
+    targetPage: page,
+    movedCount: moved.length,
   });
 });
 
@@ -814,12 +1084,13 @@ export {
   deleteMovie,
   deleteAllMovies,
   createMovie,
-  getDistinctBrowseBy,
   getLatestMovies,
+  getDistinctBrowseBy,
   adminReplyReview,
   generateSitemap,
-  // removed old bulkUpdateMovies
-  bulkExactUpdateMovies,   // NEW
-  bulkDeleteByName,        // NEW
-  bulkCreateMovies,        // keep
+  bulkExactUpdateMovies,
+  bulkDeleteByName,
+  bulkCreateMovies,
+  reorderMoviesInPage,
+  moveMoviesToPage,
 };
