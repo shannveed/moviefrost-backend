@@ -14,27 +14,20 @@ const REORDER_PAGE_LIMIT = 50;
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
-// Turn "One Battle After Another (2025)" into "one-battle-after-another-(2025)"
-// and avoid double year like "(2025) (2025)"
+// Turn the "name" into a slug, based ONLY on the name.
+// We now COMPLETELY ignore the numeric "year" field to avoid adding an extra year.
+// If the name itself contains a year (e.g. "Ne Zha 2 (2025)"), that year stays;
+// but we never append another "(2025)" from movie.year.
 const slugifyNameAndYear = (name, year) => {
   if (!name) return '';
 
-  let base = String(name).trim();
-
-  if (typeof year === 'number' && year > 0) {
-    const yearStr = String(year);
-    const yearPattern = new RegExp(`\\(\\s*${yearStr}\\s*\\)`);
-    // Append "(year)" only if it's not already in the name
-    if (!yearPattern.test(base)) {
-      base = `${base} (${yearStr})`;
-    }
-  }
+  const base = String(name).trim();
 
   return base
     .toLowerCase()
     .trim()
-    // keep a–z, 0–9, spaces, hyphens and parentheses
-    .replace(/[^a-z0-9\s\-\(\)]/g, '')
+    // keep a–z, 0–9, spaces and hyphens; strip everything else (including parentheses)
+    .replace(/[^a-z0-9\s\-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-');
 };
