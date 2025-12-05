@@ -15,13 +15,20 @@ const REORDER_PAGE_LIMIT = 50;
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
 // Turn "One Battle After Another (2025)" into "one-battle-after-another-(2025)"
+// and avoid double year like "(2025) (2025)"
 const slugifyNameAndYear = (name, year) => {
   if (!name) return '';
 
-  const base =
-    typeof year === 'number' && year > 0
-      ? `${name} (${year})`
-      : String(name);
+  let base = String(name).trim();
+
+  if (typeof year === 'number' && year > 0) {
+    const yearStr = String(year);
+    const yearPattern = new RegExp(`\\(\\s*${yearStr}\\s*\\)`);
+    // Append "(year)" only if it's not already in the name
+    if (!yearPattern.test(base)) {
+      base = `${base} (${yearStr})`;
+    }
+  }
 
   return base
     .toLowerCase()
@@ -104,7 +111,8 @@ const getMovies = asyncHandler(async (req, res) => {
       ...(language && { language }),
       ...(rate && { rate }),
       ...(year && { year }),
-      ...(browseBy && browseBy.trim() !== '' && { browseBy: { $in: browseBy.split(',') } }),
+      ...(browseBy &&
+        browseBy.trim() !== '' && { browseBy: { $in: browseBy.split(',') } }),
       ...(search && { name: { $regex: search, $options: 'i' } }),
     };
 
@@ -121,7 +129,8 @@ const getMovies = asyncHandler(async (req, res) => {
     const sortPrevHits = { orderIndex: 1, createdAt: -1 };
 
     const normalCount = await Movie.countDocuments(normalFilter);
-    const totalCount = normalCount + (await Movie.countDocuments(prevHitFilter));
+    const totalCount =
+      normalCount + (await Movie.countDocuments(prevHitFilter));
 
     let movies = [];
 
@@ -189,7 +198,9 @@ const getMovieById = asyncHandler(async (req, res) => {
       // Ensure slug exists for legacy movies
       if (!movie.slug) {
         const slugYear =
-          typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+          typeof movie.year === 'number'
+            ? movie.year
+            : Number(movie.year) || undefined;
         movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
       }
 
@@ -333,9 +344,7 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.titleImage = titleImage || movie.titleImage;
     movie.rate = rate !== undefined ? rate : movie.rate;
     movie.numberOfReviews =
-      numberOfReviews !== undefined
-        ? numberOfReviews
-        : movie.numberOfReviews;
+      numberOfReviews !== undefined ? numberOfReviews : movie.numberOfReviews;
     movie.category = category || movie.category;
     movie.browseBy = browseBy || movie.browseBy;
     movie.thumbnailInfo =
@@ -376,7 +385,9 @@ const updateMovie = asyncHandler(async (req, res) => {
       movie.year !== originalYear
     ) {
       const slugYear =
-        typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+        typeof movie.year === 'number'
+          ? movie.year
+          : Number(movie.year) || undefined;
       movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
     }
 
@@ -1155,7 +1166,10 @@ const moveMoviesToPage = asyncHandler(async (req, res) => {
   const bulkOps = newOrder.map((m, idx) => {
     const updateDoc = { $set: { orderIndex: idx + 1 } };
 
-    if (movedIdSet.has(String(m._id)) && Object.keys(updateFlagsForMoved).length) {
+    if (
+      movedIdSet.has(String(m._id)) &&
+      Object.keys(updateFlagsForMoved).length
+    ) {
       updateDoc.$set = { ...updateDoc.$set, ...updateFlagsForMoved };
     }
 
@@ -1178,28 +1192,29 @@ const moveMoviesToPage = asyncHandler(async (req, res) => {
 });
 
 /* ================================================================== */
-/*      ADMIN: generate slugs for all existing movies                 */
+/*      ADMIN: generate slugs for ALL existing movies                 */
 /*      POST /api/movies/admin/generate-slugs                         */
 /* ================================================================== */
 
 const generateSlugsForAllMovies = asyncHandler(async (req, res) => {
   try {
-    const moviesWithoutSlug = await Movie.find({
-      $or: [{ slug: { $exists: false } }, { slug: null }, { slug: '' }],
-    }).select('_id name year slug');
+    // NOTE: we now regenerate slugs for **all** movies, not just missing ones.
+    const movies = await Movie.find({}).select('_id name year slug');
 
     let updated = 0;
 
-    for (const movie of moviesWithoutSlug) {
+    for (const movie of movies) {
       const slugYear =
-        typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+        typeof movie.year === 'number'
+          ? movie.year
+          : Number(movie.year) || undefined;
       movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
       await movie.save();
       updated += 1;
     }
 
     res.status(200).json({
-      message: 'Slugs generated for movies without slug',
+      message: 'Slugs generated (or regenerated) for all movies',
       updatedCount: updated,
     });
   } catch (error) {
