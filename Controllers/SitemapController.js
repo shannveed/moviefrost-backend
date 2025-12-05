@@ -20,7 +20,7 @@ const escapeXml = (unsafe = '') =>
 export const generateSitemap = asyncHandler(async (_req, res) => {
   try {
     const [movies, categories] = await Promise.all([
-      Movie.find({}).select('_id updatedAt').lean(),
+      Movie.find({}).select('_id slug updatedAt').lean(),
       Categories.find({}).select('title updatedAt').lean(),
     ]);
 
@@ -63,14 +63,16 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
       });
     }
 
-    // Movie detail pages
+    // Movie detail pages (prefer slug)
     for (const movie of movies) {
       const lastmod = movie.updatedAt
         ? new Date(movie.updatedAt).toISOString()
         : undefined;
 
+      const pathSegment = movie.slug || movie._id;
+
       urls.push({
-        loc: `${FRONTEND_BASE_URL}/movie/${movie._id}`,
+        loc: `${FRONTEND_BASE_URL}/movie/${pathSegment}`,
         lastmod,
         changefreq: 'weekly',
         priority: '0.8',
@@ -119,7 +121,6 @@ ${urls
         const sitemapUrl = encodeURIComponent(
           `${FRONTEND_BASE_URL}/sitemap.xml`
         );
-        // global fetch is available in Node 18+/Vercel runtime
         fetch(`https://www.google.com/ping?sitemap=${sitemapUrl}`).catch(
           () => {}
         );
@@ -145,7 +146,7 @@ export const generateVideoSitemap = asyncHandler(async (_req, res) => {
       video: { $ne: null },
     })
       .select(
-        '_id name desc image titleImage createdAt updatedAt video downloadUrl time category seoTitle seoDescription seoKeywords viewCount'
+        '_id slug name desc image titleImage createdAt updatedAt video downloadUrl time category seoTitle seoDescription seoKeywords viewCount'
       )
       .lean();
 
@@ -156,7 +157,8 @@ export const generateVideoSitemap = asyncHandler(async (_req, res) => {
 >
 ${movies
   .map((m) => {
-    const pageUrl = `${FRONTEND_BASE_URL}/watch/${m._id}`;
+    const pathSegment = m.slug || m._id;
+    const pageUrl = `${FRONTEND_BASE_URL}/watch/${pathSegment}`;
     const contentUrl = m.downloadUrl || m.video || pageUrl;
 
     const rawThumb = m.image || m.titleImage || `${FRONTEND_BASE_URL}/og-image.jpg`;

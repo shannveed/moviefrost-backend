@@ -67,6 +67,14 @@ router.post(
   moviesController.moveMoviesToPage
 );
 
+// NEW: generate slugs for all existing movies
+router.post(
+  '/admin/generate-slugs',
+  protect,
+  admin,
+  moviesController.generateSlugsForAllMovies
+);
+
 // Single movie admin routes
 router.put('/:id', protect, admin, moviesController.updateMovie);
 router.delete('/:id', protect, admin, moviesController.deleteMovie);

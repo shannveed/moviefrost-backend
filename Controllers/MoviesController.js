@@ -3,9 +3,59 @@ import { MoviesData } from '../Data/MoviesData.js';
 import Movie from '../Models/MoviesModel.js';
 import Categories from '../Models/CategoriesModel.js';
 import asyncHandler from 'express-async-handler';
+import mongoose from 'mongoose';
 
 // Constant for page limit
 const REORDER_PAGE_LIMIT = 50;
+
+/* ================================================================== */
+/*                      SLUG HELPERS                                  */
+/* ================================================================== */
+
+const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+
+// Turn "One Battle After Another (2025)" into "one-battle-after-another-(2025)"
+const slugifyNameAndYear = (name, year) => {
+  if (!name) return '';
+
+  const base =
+    typeof year === 'number' && year > 0
+      ? `${name} (${year})`
+      : String(name);
+
+  return base
+    .toLowerCase()
+    .trim()
+    // keep a–z, 0–9, spaces, hyphens and parentheses
+    .replace(/[^a-z0-9\s\-\(\)]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-');
+};
+
+// Ensure slug is unique in DB, adding -2, -3, ... if necessary
+const generateUniqueSlug = async (name, year, existingId = null) => {
+  let baseSlug = slugifyNameAndYear(name, year);
+  if (!baseSlug) {
+    baseSlug = existingId ? String(existingId) : '';
+  }
+
+  let slug = baseSlug;
+  let counter = 2;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const query = { slug };
+    if (existingId) {
+      query._id = { $ne: existingId };
+    }
+    const existing = await Movie.findOne(query).select('_id').lean();
+    if (!existing) break;
+    slug = `${baseSlug}-${counter}`;
+    counter += 1;
+  }
+
+  return slug;
+};
 
 /* ================================================================== */
 /*                HELPER: ensure orderIndex is initialized            */
@@ -116,11 +166,33 @@ const getMovies = asyncHandler(async (req, res) => {
 
 const getMovieById = asyncHandler(async (req, res) => {
   try {
-    const movie = await Movie.findById(req.params.id).populate(
-      'reviews.userId',
-      'fullName image'
-    );
+    const param = req.params.id; // can be MongoId or slug
+    let movie = null;
+
+    // 1) try as ObjectId
+    if (param && isValidObjectId(param)) {
+      movie = await Movie.findById(param).populate(
+        'reviews.userId',
+        'fullName image'
+      );
+    }
+
+    // 2) fallback to slug
+    if (!movie) {
+      movie = await Movie.findOne({ slug: param }).populate(
+        'reviews.userId',
+        'fullName image'
+      );
+    }
+
     if (movie) {
+      // Ensure slug exists for legacy movies
+      if (!movie.slug) {
+        const slugYear =
+          typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+        movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
+      }
+
       movie.viewCount = (movie.viewCount || 0) + 1;
       await movie.save();
 
@@ -190,6 +262,7 @@ const createMovieReview = asyncHandler(async (req, res) => {
       const reviewWithMovieName = {
         ...newReview.toObject(),
         movieName: movie.name,
+        movieSlug: movie.slug || null,
       };
 
       res.status(201).json({
@@ -250,6 +323,9 @@ const updateMovie = asyncHandler(async (req, res) => {
       throw new Error('Movie cannot be both Latest and PreviousHit');
     }
 
+    const originalName = movie.name;
+    const originalYear = movie.year;
+
     movie.type = type || movie.type;
     movie.name = name || movie.name;
     movie.desc = desc || movie.desc;
@@ -291,6 +367,17 @@ const updateMovie = asyncHandler(async (req, res) => {
         res.status(400);
         throw new Error('Invalid type specified for update');
       }
+    }
+
+    // Recompute slug if name or year changed, or slug missing
+    if (
+      !movie.slug ||
+      movie.name !== originalName ||
+      movie.year !== originalYear
+    ) {
+      const slugYear =
+        typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+      movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
     }
 
     const updatedMovie = await movie.save();
@@ -380,6 +467,12 @@ const createMovie = asyncHandler(async (req, res) => {
       .lean();
     const newOrderIndex = (maxOrderDoc?.orderIndex || 0) + 1;
 
+    const numericYear = Number(year) || undefined;
+    const slug = await generateUniqueSlug(
+      name,
+      typeof numericYear === 'number' ? numericYear : undefined
+    );
+
     const movieData = {
       type,
       name,
@@ -393,7 +486,7 @@ const createMovie = asyncHandler(async (req, res) => {
       thumbnailInfo: thumbnailInfo || '',
       time,
       language,
-      year,
+      year: numericYear || year,
       userId: req.user._id,
       casts: casts || [],
       seoTitle: seoTitle || name,
@@ -403,6 +496,7 @@ const createMovie = asyncHandler(async (req, res) => {
       latest: !!latest,
       previousHit: !!previousHit,
       orderIndex: newOrderIndex,
+      slug,
     };
 
     if (type === 'Movie') {
@@ -496,6 +590,7 @@ const adminReplyReview = asyncHandler(async (req, res) => {
       review: {
         ...review.toObject(),
         movieId: movie._id,
+        movieSlug: movie.slug || null,
         reviewId: review._id,
       },
     };
@@ -508,10 +603,10 @@ const adminReplyReview = asyncHandler(async (req, res) => {
   }
 });
 
-// Generate sitemap
+// Generate sitemap (legacy, not used by router now but keep updated)
 const generateSitemap = asyncHandler(async (req, res) => {
   try {
-    const movies = await Movie.find({}).select('_id name updatedAt');
+    const movies = await Movie.find({}).select('_id slug name updatedAt');
     const categories = await Categories.find({}).select('title');
 
     let sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n';
@@ -555,8 +650,9 @@ const generateSitemap = asyncHandler(async (req, res) => {
     });
 
     movies.forEach((movie) => {
+      const pathSegment = movie.slug || movie._id;
       sitemap += `  <url>\n`;
-      sitemap += `    <loc>https://www.moviefrost.com/movie/${movie._id}</loc>\n`;
+      sitemap += `    <loc>https://www.moviefrost.com/movie/${pathSegment}</loc>\n`;
       sitemap += `    <lastmod>${movie.updatedAt.toISOString()}</lastmod>\n`;
       sitemap += `    <changefreq>weekly</changefreq>\n`;
       sitemap += `    <priority>0.8</priority>\n`;
@@ -623,6 +719,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'latest',
     'previousHit',
     'userId',
+    'slug',
   ];
   const allowedMovieOnly = ['video', 'videoUrl2', 'downloadUrl'];
   const allowedWebOnly = ['episodes'];
@@ -840,6 +937,12 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
 
       currentOrderIndex++;
 
+      const numericYear = Number(year) || undefined;
+      const slug = await generateUniqueSlug(
+        name,
+        typeof numericYear === 'number' ? numericYear : undefined
+      );
+
       const movieData = {
         type,
         name,
@@ -853,7 +956,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         thumbnailInfo: thumbnailInfo || '',
         time,
         language,
-        year,
+        year: numericYear || year,
         userId: req.user._id,
         casts: casts || [],
         seoTitle: seoTitle || name,
@@ -864,6 +967,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         latest: !!latest,
         previousHit: !!previousHit,
         orderIndex: currentOrderIndex,
+        slug,
       };
 
       if (type === 'Movie') {
@@ -1073,6 +1177,36 @@ const moveMoviesToPage = asyncHandler(async (req, res) => {
   });
 });
 
+/* ================================================================== */
+/*      ADMIN: generate slugs for all existing movies                 */
+/*      POST /api/movies/admin/generate-slugs                         */
+/* ================================================================== */
+
+const generateSlugsForAllMovies = asyncHandler(async (req, res) => {
+  try {
+    const moviesWithoutSlug = await Movie.find({
+      $or: [{ slug: { $exists: false } }, { slug: null }, { slug: '' }],
+    }).select('_id name year slug');
+
+    let updated = 0;
+
+    for (const movie of moviesWithoutSlug) {
+      const slugYear =
+        typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+      movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
+      await movie.save();
+      updated += 1;
+    }
+
+    res.status(200).json({
+      message: 'Slugs generated for movies without slug',
+      updatedCount: updated,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 export {
   importMovies,
   getMovies,
@@ -1093,4 +1227,5 @@ export {
   bulkCreateMovies,
   reorderMoviesInPage,
   moveMoviesToPage,
+  generateSlugsForAllMovies,
 };

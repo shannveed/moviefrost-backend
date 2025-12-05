@@ -1,3 +1,4 @@
+// backend/Models/MoviesModel.js
 import mongoose from 'mongoose';
 
 const reviewSchema = mongoose.Schema(
@@ -46,6 +47,14 @@ const moviesSchema = mongoose.Schema(
     name: {
       type: String,
       required: true,
+    },
+    // NEW: SEO slug used in URLs, e.g. "one-battle-after-another-(2025)"
+    slug: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+      trim: true,
     },
     desc: {
       type: String,
@@ -175,7 +184,8 @@ moviesSchema.index({ browseBy: 1, createdAt: -1 });
 moviesSchema.index({ rate: -1 });
 moviesSchema.index({ viewCount: -1 });
 moviesSchema.index({ latest: -1, previousHit: 1, createdAt: -1 });
-// Also index orderIndex for ordering
+// Also index orderIndex and slug for ordering / lookup
 moviesSchema.index({ orderIndex: 1 });
+moviesSchema.index({ slug: 1 });
 
 export default mongoose.model('Movie', moviesSchema);
