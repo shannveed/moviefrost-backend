@@ -21,6 +21,12 @@ router.get('/rated/top', moviesController.getTopRatedMovies);
 router.get('/random/all', moviesController.getRandomMovies);
 router.get('/latest', moviesController.getLatestMovies);
 router.get('/browseBy-distinct', moviesController.getDistinctBrowseBy);
+
+// ADMIN READ ROUTES (include unpublished / drafts)
+router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
+router.get('/admin/:id', protect, admin, moviesController.getMovieByIdAdmin);
+
+// PUBLIC single movie (only published)
 router.get('/:id', moviesController.getMovieById);
 
 // * PRIVATE ROUTES *
@@ -33,7 +39,6 @@ router.post(
 );
 
 // * ADMIN ROUTES *
-// Bulk exact update (by exact name + type or by _id if provided)
 router.put(
   '/bulk-exact',
   protect,
@@ -41,7 +46,6 @@ router.put(
   moviesController.bulkExactUpdateMovies
 );
 
-// Bulk delete (by exact name + type or by _id if provided)
 router.post(
   '/bulk-delete',
   protect,
@@ -49,10 +53,8 @@ router.post(
   moviesController.bulkDeleteByName
 );
 
-// Bulk create
 router.post('/bulk', protect, admin, moviesController.bulkCreateMovies);
 
-// NEW: admin ordering
 router.post(
   '/admin/reorder-page',
   protect,
@@ -67,7 +69,6 @@ router.post(
   moviesController.moveMoviesToPage
 );
 
-// NEW: generate slugs for all existing movies
 router.post(
   '/admin/generate-slugs',
   protect,
@@ -75,7 +76,6 @@ router.post(
   moviesController.generateSlugsForAllMovies
 );
 
-// Single movie admin routes
 router.put('/:id', protect, admin, moviesController.updateMovie);
 router.delete('/:id', protect, admin, moviesController.deleteMovie);
 router.delete('/', protect, admin, moviesController.deleteAllMovies);

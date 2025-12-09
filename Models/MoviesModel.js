@@ -48,7 +48,7 @@ const moviesSchema = mongoose.Schema(
       type: String,
       required: true,
     },
-    // NEW: SEO slug used in URLs, e.g. "one-battle-after-another-(2025)"
+    // SEO slug used in URLs, e.g. "/movie/one-battle-after-another"
     slug: {
       type: String,
       unique: true,
@@ -148,7 +148,7 @@ const moviesSchema = mongoose.Schema(
       type: Number,
       default: 0,
     },
-    // NEW FLAGS
+    // FLAGS
     latest: {
       type: Boolean,
       default: false,
@@ -157,7 +157,15 @@ const moviesSchema = mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    // NEW: manual ordering index for admin
+    // visibility flag (draft vs published)
+    // false  => only admins see it in public endpoints
+    // true   => visible to all users
+    isPublished: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    // manual ordering index for admin
     orderIndex: {
       type: Number,
       default: null,
@@ -169,7 +177,7 @@ const moviesSchema = mongoose.Schema(
   }
 );
 
-// Add text index for better search
+// Text index for search
 moviesSchema.index({
   name: 'text',
   desc: 'text',
@@ -178,14 +186,14 @@ moviesSchema.index({
   seoKeywords: 'text',
 });
 
-// Add compound indexes for common queries
+// Compound indexes for performance
 moviesSchema.index({ category: 1, createdAt: -1 });
 moviesSchema.index({ browseBy: 1, createdAt: -1 });
 moviesSchema.index({ rate: -1 });
 moviesSchema.index({ viewCount: -1 });
 moviesSchema.index({ latest: -1, previousHit: 1, createdAt: -1 });
-// Also index orderIndex and slug for ordering / lookup
 moviesSchema.index({ orderIndex: 1 });
 moviesSchema.index({ slug: 1 });
+moviesSchema.index({ isPublished: 1 });
 
 export default mongoose.model('Movie', moviesSchema);

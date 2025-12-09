@@ -5,19 +5,15 @@ import Categories from '../Models/CategoriesModel.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 
-// Constant for page limit
 const REORDER_PAGE_LIMIT = 50;
 
-/* ================================================================== */
-/*                      SLUG HELPERS                                  */
-/* ================================================================== */
+// Treat "missing isPublished" as published
+const publicVisibilityFilter = { isPublished: { $ne: false } };
 
+// Check if valid ObjectId
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
 // Turn the "name" into a slug, based ONLY on the name.
-// We now COMPLETELY ignore the numeric "year" field to avoid adding an extra year.
-// If the name itself contains a year (e.g. "Ne Zha 2 (2025)"), that year stays;
-// but we never append another "(2025)" from movie.year.
 const slugifyNameAndYear = (name, year) => {
   if (!name) return '';
 
@@ -26,13 +22,12 @@ const slugifyNameAndYear = (name, year) => {
   return base
     .toLowerCase()
     .trim()
-    // keep a–z, 0–9, spaces and hyphens; strip everything else (including parentheses)
     .replace(/[^a-z0-9\s\-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-');
 };
 
-// Ensure slug is unique in DB, adding -2, -3, ... if necessary
+// Ensure slug is unique (adds -2, -3 etc. if needed)
 const generateUniqueSlug = async (name, year, existingId = null) => {
   let baseSlug = slugifyNameAndYear(name, year);
   if (!baseSlug) {
@@ -57,19 +52,40 @@ const generateUniqueSlug = async (name, year, existingId = null) => {
   return slug;
 };
 
-/* ================================================================== */
-/*                HELPER: ensure orderIndex is initialized            */
-/* ================================================================== */
+// Find movie by id or slug, optionally with extra filter
+const findMovieByIdOrSlug = async (param, extraFilter = {}) => {
+  if (!param) return null;
 
+  let movie = null;
+  const baseFilter = { ...extraFilter };
+
+  // 1) Try as ObjectId
+  if (isValidObjectId(param)) {
+    movie = await Movie.findOne({ _id: param, ...baseFilter }).populate(
+      'reviews.userId',
+      'fullName image'
+    );
+  }
+
+  // 2) Fallback to slug
+  if (!movie) {
+    movie = await Movie.findOne({ slug: param, ...baseFilter }).populate(
+      'reviews.userId',
+      'fullName image'
+    );
+  }
+
+  return movie;
+};
+
+// Ensure orderIndex is initialized for all movies
 const ensureOrderIndexes = async () => {
-  // Check if there is any movie without a valid orderIndex
   const missing = await Movie.countDocuments({
     $or: [{ orderIndex: { $exists: false } }, { orderIndex: null }],
   });
 
   if (!missing) return;
 
-  // Initialize orderIndex based on current sort (latest, previousHit, createdAt)
   const allMovies = await Movie.find({})
     .sort({ latest: -1, previousHit: 1, createdAt: -1 })
     .select('_id')
@@ -87,25 +103,31 @@ const ensureOrderIndexes = async () => {
   }
 };
 
-// * PUBLIC CONTROLLERS *
+/* ================================================================== */
+/*                      PUBLIC / ADMIN CONTROLLERS                    */
+/* ================================================================== */
+
 const importMovies = asyncHandler(async (req, res) => {
   await Movie.deleteMany({});
   const movies = await Movie.insertMany(MoviesData);
   res.status(201).json(movies);
 });
 
+// PUBLIC: get all movies (only published)
 const getMovies = asyncHandler(async (req, res) => {
   try {
     const { category, time, language, rate, year, search, browseBy } = req.query;
 
     let baseFilter = {
+      ...publicVisibilityFilter,
       ...(category && { category }),
       ...(time && { time }),
       ...(language && { language }),
       ...(rate && { rate }),
       ...(year && { year }),
-      ...(browseBy &&
-        browseBy.trim() !== '' && { browseBy: { $in: browseBy.split(',') } }),
+      ...(browseBy && browseBy.trim() !== '' && {
+        browseBy: { $in: browseBy.split(',') },
+      }),
       ...(search && { name: { $regex: search, $options: 'i' } }),
     };
 
@@ -113,11 +135,9 @@ const getMovies = asyncHandler(async (req, res) => {
     const limit = REORDER_PAGE_LIMIT;
     const skip = (page - 1) * limit;
 
-    // Split into two buckets
     const normalFilter = { ...baseFilter, previousHit: { $ne: true } };
     const prevHitFilter = { ...baseFilter, previousHit: true };
 
-    // UPDATED: use orderIndex to control manual order
     const sortLatest = { latest: -1, orderIndex: 1, createdAt: -1 };
     const sortPrevHits = { orderIndex: 1, createdAt: -1 };
 
@@ -166,29 +186,85 @@ const getMovies = asyncHandler(async (req, res) => {
   }
 });
 
+// ADMIN: get all movies (includes drafts/unpublished)
+const getMoviesAdmin = asyncHandler(async (req, res) => {
+  try {
+    const { category, time, language, rate, year, search, browseBy } = req.query;
+
+    let baseFilter = {
+      ...(category && { category }),
+      ...(time && { time }),
+      ...(language && { language }),
+      ...(rate && { rate }),
+      ...(year && { year }),
+      ...(browseBy && browseBy.trim() !== '' && {
+        browseBy: { $in: browseBy.split(',') },
+      }),
+      ...(search && { name: { $regex: search, $options: 'i' } }),
+    };
+
+    const page = Number(req.query.pageNumber) || 1;
+    const limit = REORDER_PAGE_LIMIT;
+    const skip = (page - 1) * limit;
+
+    const normalFilter = { ...baseFilter, previousHit: { $ne: true } };
+    const prevHitFilter = { ...baseFilter, previousHit: true };
+
+    const sortLatest = { latest: -1, orderIndex: 1, createdAt: -1 };
+    const sortPrevHits = { orderIndex: 1, createdAt: -1 };
+
+    const normalCount = await Movie.countDocuments(normalFilter);
+    const totalCount =
+      normalCount + (await Movie.countDocuments(prevHitFilter));
+
+    let movies = [];
+
+    if (skip < normalCount) {
+      const remainingNormal = normalCount - skip;
+      const takeFromNormal = Math.min(limit, remainingNormal);
+      const takeFromPrevHits = limit - takeFromNormal;
+
+      const normalMovies = await Movie.find(normalFilter)
+        .sort(sortLatest)
+        .skip(skip)
+        .limit(takeFromNormal);
+
+      if (takeFromPrevHits > 0) {
+        const prevHitMovies = await Movie.find(prevHitFilter)
+          .sort(sortPrevHits)
+          .limit(takeFromPrevHits);
+        movies = [...normalMovies, ...prevHitMovies];
+      } else {
+        movies = normalMovies;
+      }
+    } else {
+      const adjustedSkip = skip - normalCount;
+      movies = await Movie.find(prevHitFilter)
+        .sort(sortPrevHits)
+        .skip(adjustedSkip)
+        .limit(limit);
+    }
+
+    const pages = Math.ceil(totalCount / limit) || 1;
+
+    res.json({
+      movies,
+      page,
+      pages,
+      totalMovies: totalCount,
+    });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// PUBLIC: get movie by id/slug (only published)
 const getMovieById = asyncHandler(async (req, res) => {
   try {
-    const param = req.params.id; // can be MongoId or slug
-    let movie = null;
-
-    // 1) try as ObjectId
-    if (param && isValidObjectId(param)) {
-      movie = await Movie.findById(param).populate(
-        'reviews.userId',
-        'fullName image'
-      );
-    }
-
-    // 2) fallback to slug
-    if (!movie) {
-      movie = await Movie.findOne({ slug: param }).populate(
-        'reviews.userId',
-        'fullName image'
-      );
-    }
+    const param = req.params.id;
+    const movie = await findMovieByIdOrSlug(param, publicVisibilityFilter);
 
     if (movie) {
-      // Ensure slug exists for legacy movies
       if (!movie.slug) {
         const slugYear =
           typeof movie.year === 'number'
@@ -210,9 +286,38 @@ const getMovieById = asyncHandler(async (req, res) => {
   }
 });
 
+// ADMIN: get movie by id/slug (includes drafts)
+const getMovieByIdAdmin = asyncHandler(async (req, res) => {
+  try {
+    const param = req.params.id;
+    const movie = await findMovieByIdOrSlug(param, {});
+
+    if (movie) {
+      if (!movie.slug) {
+        const slugYear =
+          typeof movie.year === 'number'
+            ? movie.year
+            : Number(movie.year) || undefined;
+        movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
+      }
+
+      movie.viewCount = (movie.viewCount || 0) + 1;
+      await movie.save();
+
+      res.json(movie);
+    } else {
+      res.status(404);
+      throw new Error('Movie not found');
+    }
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// PUBLIC: top rated (only published)
 const getTopRatedMovies = asyncHandler(async (req, res) => {
   try {
-    const movies = await Movie.find({})
+    const movies = await Movie.find(publicVisibilityFilter)
       .sort({ rate: -1 })
       .limit(10)
       .select('-reviews');
@@ -222,9 +327,11 @@ const getTopRatedMovies = asyncHandler(async (req, res) => {
   }
 });
 
+// PUBLIC: random (only published)
 const getRandomMovies = asyncHandler(async (req, res) => {
   try {
     const movies = await Movie.aggregate([
+      { $match: publicVisibilityFilter },
       { $sample: { size: 8 } },
       { $project: { reviews: 0 } },
     ]);
@@ -234,6 +341,7 @@ const getRandomMovies = asyncHandler(async (req, res) => {
   }
 });
 
+// PRIVATE: create review
 const createMovieReview = asyncHandler(async (req, res) => {
   const { rating, comment } = req.body;
   try {
@@ -282,6 +390,7 @@ const createMovieReview = asyncHandler(async (req, res) => {
   }
 });
 
+// ADMIN: update movie
 const updateMovie = asyncHandler(async (req, res) => {
   try {
     const {
@@ -308,6 +417,7 @@ const updateMovie = asyncHandler(async (req, res) => {
       seoKeywords,
       latest,
       previousHit,
+      isPublished,
     } = req.body;
 
     const movie = await Movie.findById(req.params.id);
@@ -353,6 +463,11 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.previousHit =
       previousHit !== undefined ? !!previousHit : movie.previousHit;
 
+    // NEW: toggle visibility
+    if (isPublished !== undefined) {
+      movie.isPublished = !!isPublished;
+    }
+
     if (type === 'Movie') {
       movie.video = video || movie.video;
       movie.videoUrl2 = videoUrl2 || movie.videoUrl2;
@@ -364,11 +479,9 @@ const updateMovie = asyncHandler(async (req, res) => {
       movie.video = undefined;
       movie.downloadUrl = undefined;
       movie.videoUrl2 = undefined;
-    } else {
-      if (type) {
-        res.status(400);
-        throw new Error('Invalid type specified for update');
-      }
+    } else if (type) {
+      res.status(400);
+      throw new Error('Invalid type specified for update');
     }
 
     // Recompute slug if name or year changed, or slug missing
@@ -391,6 +504,7 @@ const updateMovie = asyncHandler(async (req, res) => {
   }
 });
 
+// ADMIN: delete movie
 const deleteMovie = asyncHandler(async (req, res) => {
   try {
     const movie = await Movie.findById(req.params.id);
@@ -406,6 +520,7 @@ const deleteMovie = asyncHandler(async (req, res) => {
   }
 });
 
+// ADMIN: delete all movies
 const deleteAllMovies = asyncHandler(async (req, res) => {
   try {
     await Movie.deleteMany({});
@@ -415,6 +530,7 @@ const deleteAllMovies = asyncHandler(async (req, res) => {
   }
 });
 
+// ADMIN: create movie
 const createMovie = asyncHandler(async (req, res) => {
   try {
     const {
@@ -441,6 +557,7 @@ const createMovie = asyncHandler(async (req, res) => {
       seoKeywords,
       latest = false,
       previousHit = false,
+      isPublished = true, // NEW: published by default
     } = req.body;
 
     if (
@@ -464,12 +581,50 @@ const createMovie = asyncHandler(async (req, res) => {
       throw new Error('Movie cannot be both Latest and PreviousHit');
     }
 
-    // Get max orderIndex to place new movie at end initially
-    const maxOrderDoc = await Movie.findOne({})
-      .sort({ orderIndex: -1 })
-      .select('orderIndex')
-      .lean();
-    const newOrderIndex = (maxOrderDoc?.orderIndex || 0) + 1;
+    // Decide initial orderIndex so that:
+    // - latest === true, previousHit === false  -> appears on page 1 (front)
+    // - previousHit === true                    -> appears at the end (last page)
+    // - otherwise                               -> appended after other normal movies
+    let newOrderIndex;
+
+    if (previousHit) {
+      // Place after all existing previousHit movies (end of last page)
+      const maxPrevDoc = await Movie.findOne({ previousHit: true })
+        .sort({ orderIndex: -1 })
+        .select('orderIndex')
+        .lean();
+
+      if (maxPrevDoc) {
+        newOrderIndex = (maxPrevDoc.orderIndex || 0) + 1;
+      } else {
+        const maxAnyDoc = await Movie.findOne({})
+          .sort({ orderIndex: -1 })
+          .select('orderIndex')
+          .lean();
+        newOrderIndex = (maxAnyDoc?.orderIndex || 0) + 1;
+      }
+    } else if (latest) {
+      // Place at the very beginning of the normal list (page 1)
+      // by using the smallest existing orderIndex among non-previousHit movies.
+      const minNormalDoc = await Movie.findOne({
+        previousHit: { $ne: true },
+      })
+        .sort({ orderIndex: 1 })
+        .select('orderIndex')
+        .lean();
+
+      newOrderIndex = minNormalDoc?.orderIndex || 1;
+    } else {
+      // Default: append after all other non-previousHit movies
+      const maxNormalDoc = await Movie.findOne({
+        previousHit: { $ne: true },
+      })
+        .sort({ orderIndex: -1 })
+        .select('orderIndex')
+        .lean();
+
+      newOrderIndex = (maxNormalDoc?.orderIndex || 0) + 1;
+    }
 
     const numericYear = Number(year) || undefined;
     const slug = await generateUniqueSlug(
@@ -499,6 +654,7 @@ const createMovie = asyncHandler(async (req, res) => {
       viewCount: 0,
       latest: !!latest,
       previousHit: !!previousHit,
+      isPublished: !!isPublished, // NEW
       orderIndex: newOrderIndex,
       slug,
     };
@@ -538,9 +694,10 @@ const createMovie = asyncHandler(async (req, res) => {
   }
 });
 
+// PUBLIC: latest 15 (only published)
 const getLatestMovies = asyncHandler(async (_req, res) => {
   try {
-    const movies = await Movie.find({})
+    const movies = await Movie.find(publicVisibilityFilter)
       .sort({ createdAt: -1 })
       .limit(15)
       .select('-reviews');
@@ -550,9 +707,11 @@ const getLatestMovies = asyncHandler(async (_req, res) => {
   }
 });
 
+// PUBLIC: distinct browseBy (only from published)
 const getDistinctBrowseBy = asyncHandler(async (req, res) => {
   try {
     const distinctValues = await Movie.distinct('browseBy', {
+      ...publicVisibilityFilter,
       browseBy: { $nin: [null, ''] },
     });
     res.status(200).json(distinctValues);
@@ -561,6 +720,7 @@ const getDistinctBrowseBy = asyncHandler(async (req, res) => {
   }
 });
 
+// ADMIN: reply to review
 const adminReplyReview = asyncHandler(async (req, res) => {
   try {
     const { id, reviewId } = req.params;
@@ -586,7 +746,6 @@ const adminReplyReview = asyncHandler(async (req, res) => {
     }
 
     review.adminReply = reply.trim();
-
     await movie.save();
 
     const replyResponse = {
@@ -607,10 +766,12 @@ const adminReplyReview = asyncHandler(async (req, res) => {
   }
 });
 
-// Generate sitemap (legacy, not used by router now but keep updated)
+// Legacy generateSitemap (only published)
 const generateSitemap = asyncHandler(async (req, res) => {
   try {
-    const movies = await Movie.find({}).select('_id slug name updatedAt');
+    const movies = await Movie.find(publicVisibilityFilter).select(
+      '_id slug name updatedAt'
+    );
     const categories = await Categories.find({}).select('title');
 
     let sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n';
@@ -722,6 +883,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'seoKeywords',
     'latest',
     'previousHit',
+    'isPublished', // NEW: allow bulk update of visibility
     'userId',
     'slug',
   ];
@@ -918,6 +1080,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         seoKeywords,
         latest = false,
         previousHit = false,
+        isPublished = true, // NEW: published by default for bulk creates
       } = item;
 
       if (
@@ -970,6 +1133,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         viewCount: 0,
         latest: !!latest,
         previousHit: !!previousHit,
+        isPublished: !!isPublished, // NEW
         orderIndex: currentOrderIndex,
         slug,
       };
@@ -1017,13 +1181,12 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
     insertedCount: insertedMovies.length,
     errorsCount: errors.length,
     errors,
+    inserted: insertedMovies, // NEW: return created docs like old project
   });
 });
 
 /* ================================================================== */
 /*      ADMIN: drag‑and‑drop reorder within a single page             */
-/*      POST /api/movies/admin/reorder-page                           */
-/*      body: { pageNumber, orderedIds: [movieId1,...,movieIdN] }     */
 /* ================================================================== */
 
 const reorderMoviesInPage = asyncHandler(async (req, res) => {
@@ -1038,7 +1201,6 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
 
   await ensureOrderIndexes();
 
-  // Get current global order
   const allMovies = await Movie.find({})
     .sort({ latest: -1, previousHit: 1, orderIndex: 1 })
     .select('_id')
@@ -1056,7 +1218,6 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
   const pageSlice = allMovies.slice(start, end);
   const pageIdsSet = new Set(pageSlice.map((m) => String(m._id)));
 
-  // Validate that orderedIds is exactly a permutation of current page IDs
   if (
     orderedIds.length !== pageSlice.length ||
     !orderedIds.every((id) => pageIdsSet.has(String(id)))
@@ -1069,12 +1230,10 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
 
   const newPageSlice = orderedIds.map((id) => idToMovie.get(String(id)));
 
-  // Put the new slice back into allMovies
   for (let i = 0; i < newPageSlice.length; i++) {
     allMovies[start + i] = newPageSlice[i];
   }
 
-  // Reassign orderIndex for entire list
   const bulkOps = allMovies.map((m, idx) => ({
     updateOne: {
       filter: { _id: m._id },
@@ -1089,8 +1248,6 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
 
 /* ================================================================== */
 /*      ADMIN: move one or many movies to a target page               */
-/*      POST /api/movies/admin/move-to-page                           */
-/*      body: { targetPage, movieIds: [id1,id2,...] }                 */
 /* ================================================================== */
 
 const moveMoviesToPage = asyncHandler(async (req, res) => {
@@ -1104,7 +1261,6 @@ const moveMoviesToPage = asyncHandler(async (req, res) => {
 
   await ensureOrderIndexes();
 
-  // NOTE: include latest/previousHit so we can adjust flags for moved movies
   const allMovies = await Movie.find({})
     .sort({ latest: -1, previousHit: 1, orderIndex: 1 })
     .select('_id latest previousHit')
@@ -1145,11 +1301,6 @@ const moveMoviesToPage = asyncHandler(async (req, res) => {
 
   const movedIdSet = new Set(moved.map((m) => String(m._id)));
 
-  // When sending movies to page 1 we want them to actually surface
-  // at the top of the normal listing (not hidden in "previousHit").
-  // So for moved items on page 1 we:
-  //   - force previousHit = false
-  //   - force latest      = true
   const updateFlagsForMoved = {};
   if (page === 1) {
     updateFlagsForMoved.previousHit = false;
@@ -1186,12 +1337,10 @@ const moveMoviesToPage = asyncHandler(async (req, res) => {
 
 /* ================================================================== */
 /*      ADMIN: generate slugs for ALL existing movies                 */
-/*      POST /api/movies/admin/generate-slugs                         */
 /* ================================================================== */
 
 const generateSlugsForAllMovies = asyncHandler(async (req, res) => {
   try {
-    // NOTE: we now regenerate slugs for **all** movies, not just missing ones.
     const movies = await Movie.find({}).select('_id name year slug');
 
     let updated = 0;
@@ -1218,7 +1367,9 @@ const generateSlugsForAllMovies = asyncHandler(async (req, res) => {
 export {
   importMovies,
   getMovies,
+  getMoviesAdmin,
   getMovieById,
+  getMovieByIdAdmin,
   getTopRatedMovies,
   getRandomMovies,
   createMovieReview,

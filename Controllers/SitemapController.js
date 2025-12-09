@@ -6,7 +6,7 @@ import Categories from '../Models/CategoriesModel.js';
 const FRONTEND_BASE_URL =
   process.env.PUBLIC_FRONTEND_URL || 'https://www.moviefrost.com';
 
-// Small helper to HTML-escape values in XML (just in case)
+// HTML-escape values in XML
 const escapeXml = (unsafe = '') =>
   String(unsafe || '')
     .replace(/&/g, '&amp;')
@@ -15,12 +15,17 @@ const escapeXml = (unsafe = '') =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
 
+// Same visibility rule: only movies where isPublished !== false
+const publicVisibilityFilter = { isPublished: { $ne: false } };
+
 // ============== MAIN SITEMAP (pages) ==================
 // GET /sitemap.xml
 export const generateSitemap = asyncHandler(async (_req, res) => {
   try {
     const [movies, categories] = await Promise.all([
-      Movie.find({}).select('_id slug updatedAt').lean(),
+      Movie.find(publicVisibilityFilter)
+        .select('_id slug updatedAt')
+        .lean(),
       Categories.find({}).select('title updatedAt').lean(),
     ]);
 
@@ -140,8 +145,9 @@ ${urls
 // GET /sitemap-videos.xml
 export const generateVideoSitemap = asyncHandler(async (_req, res) => {
   try {
-    // Only include movies that actually have video URLs
+    // Only include movies that actually have video URLs AND are published
     const movies = await Movie.find({
+      ...publicVisibilityFilter,
       type: 'Movie',
       video: { $ne: null },
     })
