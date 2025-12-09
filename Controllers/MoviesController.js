@@ -557,7 +557,7 @@ const createMovie = asyncHandler(async (req, res) => {
       seoKeywords,
       latest = false,
       previousHit = false,
-      isPublished = true, // NEW: published by default
+      isPublished = false, // NEW: published by default
     } = req.body;
 
     if (
@@ -1080,7 +1080,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         seoKeywords,
         latest = false,
         previousHit = false,
-        isPublished = true, // NEW: published by default for bulk creates
+        isPublished = false, // NEW: published by default for bulk creates
       } = item;
 
       if (
