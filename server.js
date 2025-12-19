@@ -19,8 +19,17 @@ import {
   generateSitemap,
   generateVideoSitemap,
 } from './Controllers/SitemapController.js';
+import notificationsRouter from './routes/NotificationsRouter.js';
+import watchRequestsRouter from './routes/WatchRequestsRouter.js';
+import pushRouter from './routes/PushRouter.js';
 
 dotenv.config();
+
+// Ensure NODE_ENV always has a sensible default
+if (!process.env.NODE_ENV) {
+  process.env.NODE_ENV = 'development';
+}
+const NODE_ENV = process.env.NODE_ENV;
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -75,6 +84,7 @@ app.use(
           'https://www.moviefrost.com',
           BACKEND_HOST,
           'https://moviefrost-frontend.vercel.app',
+          'https://moviefrost-frontend-*.vercel.app',
           'https://c1.popads.net',
           'https://cdn.monetag.com',
           'https://a.monetag.com',
@@ -181,6 +191,9 @@ app.use('/api/users', userRoutes);
 app.use('/api/movies', moviesRouter);
 app.use('/api/categories', categoriesRouter);
 app.use('/api/upload', Uploadrouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/requests', watchRequestsRouter);
+app.use('/api/push', pushRouter);
 
 // Health
 app.get('/health', (_req, res) => {
@@ -196,7 +209,7 @@ app.get('/', (_req, res) => {
 app.use(errorHandler);
 
 // Start HTTP server only locally (Vercel will use the exported app)
-if (process.env.NODE_ENV !== 'production') {
+if (NODE_ENV !== 'production') {
   const httpServer = createServer(app);
   const io = new SocketServer(httpServer, {
     cors: corsOptions,
@@ -212,11 +225,9 @@ if (process.env.NODE_ENV !== 'production') {
 
   const PORT = process.env.PORT || 5000;
   httpServer.listen(PORT, () => {
-    console.log(
-      `Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
-    );
+    console.log(`Server running in ${NODE_ENV} mode on port ${PORT}`);
   });
 }
 
 export default app;
-
+  

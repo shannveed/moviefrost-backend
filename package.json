@@ -37,7 +37,9 @@
     "nodemon": "^3.1.7",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
-    "uuid-v4": "^0.1.0"
+    "uuid-v4": "^0.1.0",
+    "web-push": "^3.6.7",
+    "nodemailer": "^6.9.15"
   },
   "engines": {
     "node": "22.x"

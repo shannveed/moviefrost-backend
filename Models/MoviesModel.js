@@ -53,7 +53,7 @@ const moviesSchema = mongoose.Schema(
       type: String,
       unique: true,
       sparse: true,
-      index: true,
+      index: true, // keep field-level index
       trim: true,
     },
     desc: {
@@ -163,13 +163,13 @@ const moviesSchema = mongoose.Schema(
     isPublished: {
       type: Boolean,
       default: true,
-      index: true,
+      index: true, // keep field-level index
     },
     // manual ordering index for admin
     orderIndex: {
       type: Number,
       default: null,
-      index: true,
+      index: true, // keep field-level index
     },
   },
   {
@@ -192,8 +192,11 @@ moviesSchema.index({ browseBy: 1, createdAt: -1 });
 moviesSchema.index({ rate: -1 });
 moviesSchema.index({ viewCount: -1 });
 moviesSchema.index({ latest: -1, previousHit: 1, createdAt: -1 });
-moviesSchema.index({ orderIndex: 1 });
-moviesSchema.index({ slug: 1 });
-moviesSchema.index({ isPublished: 1 });
+
+// NOTE: we intentionally DO NOT re‑declare indexes on
+// { orderIndex: 1 }, { slug: 1 }, { isPublished: 1 }
+// here to avoid duplicate index warnings, because those
+// fields already have `index: true` in their schema
+// definitions above.
 
 export default mongoose.model('Movie', moviesSchema);
