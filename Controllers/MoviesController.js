@@ -13,6 +13,23 @@ const publicVisibilityFilter = { isPublished: { $ne: false } };
 // Check if valid ObjectId
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
+/**
+ * Escape user input so it can be safely used inside a RegExp.
+ * Prevents regex injection and accidental special-character behavior.
+ */
+const escapeRegex = (value = '') =>
+  String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Build a case-insensitive "starts with" regex for movie name searching.
+ * Example: search="game" => /^game/i
+ */
+const buildStartsWithRegex = (value) => {
+  const term = String(value || '').trim();
+  if (!term) return null;
+  return new RegExp(`^${escapeRegex(term)}`, 'i');
+};
+
 // Turn the "name" into a slug, based ONLY on the name.
 const slugifyNameAndYear = (name, year) => {
   if (!name) return '';
@@ -118,6 +135,9 @@ const getMovies = asyncHandler(async (req, res) => {
   try {
     const { category, time, language, rate, year, search, browseBy } = req.query;
 
+    // ✅ NEW: starts-with search only
+    const searchRegex = buildStartsWithRegex(search);
+
     let baseFilter = {
       ...publicVisibilityFilter,
       ...(category && { category }),
@@ -128,7 +148,7 @@ const getMovies = asyncHandler(async (req, res) => {
       ...(browseBy && browseBy.trim() !== '' && {
         browseBy: { $in: browseBy.split(',') },
       }),
-      ...(search && { name: { $regex: search, $options: 'i' } }),
+      ...(searchRegex && { name: searchRegex }),
     };
 
     const page = Number(req.query.pageNumber) || 1;
@@ -191,6 +211,9 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
   try {
     const { category, time, language, rate, year, search, browseBy } = req.query;
 
+    // ✅ NEW: starts-with search only (admin too)
+    const searchRegex = buildStartsWithRegex(search);
+
     let baseFilter = {
       ...(category && { category }),
       ...(time && { time }),
@@ -200,7 +223,7 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
       ...(browseBy && browseBy.trim() !== '' && {
         browseBy: { $in: browseBy.split(',') },
       }),
-      ...(search && { name: { $regex: search, $options: 'i' } }),
+      ...(searchRegex && { name: searchRegex }),
     };
 
     const page = Number(req.query.pageNumber) || 1;
@@ -463,7 +486,7 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.previousHit =
       previousHit !== undefined ? !!previousHit : movie.previousHit;
 
-    // NEW: toggle visibility
+    // toggle visibility
     if (isPublished !== undefined) {
       movie.isPublished = !!isPublished;
     }
@@ -557,7 +580,7 @@ const createMovie = asyncHandler(async (req, res) => {
       seoKeywords,
       latest = false,
       previousHit = false,
-      isPublished = false, // NEW: published by default
+      isPublished = false,
     } = req.body;
 
     if (
@@ -581,14 +604,10 @@ const createMovie = asyncHandler(async (req, res) => {
       throw new Error('Movie cannot be both Latest and PreviousHit');
     }
 
-    // Decide initial orderIndex so that:
-    // - latest === true, previousHit === false  -> appears on page 1 (front)
-    // - previousHit === true                    -> appears at the end (last page)
-    // - otherwise                               -> appended after other normal movies
+    // Decide initial orderIndex
     let newOrderIndex;
 
     if (previousHit) {
-      // Place after all existing previousHit movies (end of last page)
       const maxPrevDoc = await Movie.findOne({ previousHit: true })
         .sort({ orderIndex: -1 })
         .select('orderIndex')
@@ -604,8 +623,6 @@ const createMovie = asyncHandler(async (req, res) => {
         newOrderIndex = (maxAnyDoc?.orderIndex || 0) + 1;
       }
     } else if (latest) {
-      // Place at the very beginning of the normal list (page 1)
-      // by using the smallest existing orderIndex among non-previousHit movies.
       const minNormalDoc = await Movie.findOne({
         previousHit: { $ne: true },
       })
@@ -615,7 +632,6 @@ const createMovie = asyncHandler(async (req, res) => {
 
       newOrderIndex = minNormalDoc?.orderIndex || 1;
     } else {
-      // Default: append after all other non-previousHit movies
       const maxNormalDoc = await Movie.findOne({
         previousHit: { $ne: true },
       })
@@ -654,7 +670,7 @@ const createMovie = asyncHandler(async (req, res) => {
       viewCount: 0,
       latest: !!latest,
       previousHit: !!previousHit,
-      isPublished: !!isPublished, // NEW
+      isPublished: !!isPublished,
       orderIndex: newOrderIndex,
       slug,
     };
@@ -883,7 +899,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'seoKeywords',
     'latest',
     'previousHit',
-    'isPublished', // NEW: allow bulk update of visibility
+    'isPublished',
     'userId',
     'slug',
   ];
@@ -1080,7 +1096,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         seoKeywords,
         latest = false,
         previousHit = false,
-        isPublished = false, // NEW: published by default for bulk creates
+        isPublished = false,
       } = item;
 
       if (
@@ -1133,7 +1149,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         viewCount: 0,
         latest: !!latest,
         previousHit: !!previousHit,
-        isPublished: !!isPublished, // NEW
+        isPublished: !!isPublished,
         orderIndex: currentOrderIndex,
         slug,
       };
@@ -1181,7 +1197,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
     insertedCount: insertedMovies.length,
     errorsCount: errors.length,
     errors,
-    inserted: insertedMovies, // NEW: return created docs like old project
+    inserted: insertedMovies,
   });
 });
 
