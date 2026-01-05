@@ -7,6 +7,11 @@ import {
   generateVideoSitemap,
 } from '../Controllers/SitemapController.js';
 
+import {
+  getRelatedMovies,
+  getRelatedMoviesAdmin,
+} from '../Controllers/RelatedMoviesController.js';
+
 const router = express.Router();
 
 // * PUBLIC ROUTES *
@@ -22,8 +27,15 @@ router.get('/random/all', moviesController.getRandomMovies);
 router.get('/latest', moviesController.getLatestMovies);
 router.get('/browseBy-distinct', moviesController.getDistinctBrowseBy);
 
+// ✅ RELATED (must be before "/:id" or it will be treated as id)
+router.get('/related/:id', getRelatedMovies);
+
 // ADMIN READ ROUTES (include unpublished / drafts)
 router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
+
+// ✅ ADMIN RELATED (must be before "/admin/:id")
+router.get('/admin/related/:id', protect, admin, getRelatedMoviesAdmin);
+
 router.get('/admin/:id', protect, admin, moviesController.getMovieByIdAdmin);
 
 // PUBLIC single movie (only published)
@@ -39,42 +51,14 @@ router.post(
 );
 
 // * ADMIN ROUTES *
-router.put(
-  '/bulk-exact',
-  protect,
-  admin,
-  moviesController.bulkExactUpdateMovies
-);
-
-router.post(
-  '/bulk-delete',
-  protect,
-  admin,
-  moviesController.bulkDeleteByName
-);
-
+router.put('/bulk-exact', protect, admin, moviesController.bulkExactUpdateMovies);
+router.post('/bulk-delete', protect, admin, moviesController.bulkDeleteByName);
 router.post('/bulk', protect, admin, moviesController.bulkCreateMovies);
 
-router.post(
-  '/admin/reorder-page',
-  protect,
-  admin,
-  moviesController.reorderMoviesInPage
-);
+router.post('/admin/reorder-page', protect, admin, moviesController.reorderMoviesInPage);
+router.post('/admin/move-to-page', protect, admin, moviesController.moveMoviesToPage);
 
-router.post(
-  '/admin/move-to-page',
-  protect,
-  admin,
-  moviesController.moveMoviesToPage
-);
-
-router.post(
-  '/admin/generate-slugs',
-  protect,
-  admin,
-  moviesController.generateSlugsForAllMovies
-);
+router.post('/admin/generate-slugs', protect, admin, moviesController.generateSlugsForAllMovies);
 
 router.put('/:id', protect, admin, moviesController.updateMovie);
 router.delete('/:id', protect, admin, moviesController.deleteMovie);

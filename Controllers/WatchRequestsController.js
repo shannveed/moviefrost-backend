@@ -52,6 +52,9 @@ export const createWatchRequest = asyncHandler(async (req, res) => {
       title: 'New watch request',
       body: `${req.user.fullName} requested "${requestedTitle}"`,
       url: `${FRONTEND_BASE_URL}/dashboard`,
+      icon: `${FRONTEND_BASE_URL}/images/MOVIEFROST.png`,
+      badge: `${FRONTEND_BASE_URL}/images/MOVIEFROST.png`,
+      tag: `watch-request:${String(requestDoc._id)}`,
     });
   }
 
@@ -89,7 +92,7 @@ export const replyToWatchRequest = asyncHandler(async (req, res) => {
   requestDoc.repliedAt = new Date();
   await requestDoc.save();
 
-  // Notify user
+  // In-app notification
   await Notification.create({
     recipient: requestDoc.userId,
     forAdmin: false,
@@ -103,10 +106,19 @@ export const replyToWatchRequest = asyncHandler(async (req, res) => {
     },
   });
 
+  // ✅ Device/browser push notification
   await sendPushToUserIds([requestDoc.userId], {
-    title: 'MovieFrost: Admin reply',
+    title: 'MovieFrost: Admin replied',
     body: replyMessage,
     url: toAbsoluteUrl(replyLink),
+    icon: `${FRONTEND_BASE_URL}/images/MOVIEFROST.png`,
+    badge: `${FRONTEND_BASE_URL}/images/MOVIEFROST.png`,
+    tag: `watch-request-reply:${String(requestDoc._id)}`,
+    requireInteraction: true,
+    data: {
+      requestId: String(requestDoc._id),
+      type: 'watch_request_reply',
+    },
   });
 
   res.json({ message: 'Reply sent', request: requestDoc });
