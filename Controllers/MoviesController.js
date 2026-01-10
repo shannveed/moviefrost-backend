@@ -6,6 +6,7 @@ import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 
 const REORDER_PAGE_LIMIT = 50;
+const LATEST_NEW_LIMIT = 100;
 
 // Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
@@ -33,9 +34,7 @@ const buildStartsWithRegex = (value) => {
 // Turn the "name" into a slug, based ONLY on the name.
 const slugifyNameAndYear = (name, year) => {
   if (!name) return '';
-
   const base = String(name).trim();
-
   return base
     .toLowerCase()
     .trim()
@@ -57,11 +56,11 @@ const generateUniqueSlug = async (name, year, existingId = null) => {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const query = { slug };
-    if (existingId) {
-      query._id = { $ne: existingId };
-    }
+    if (existingId) query._id = { $ne: existingId };
+
     const existing = await Movie.findOne(query).select('_id').lean();
     if (!existing) break;
+
     slug = `${baseSlug}-${counter}`;
     counter += 1;
   }
@@ -120,6 +119,84 @@ const ensureOrderIndexes = async () => {
   }
 };
 
+const clampLimit = (value, fallback = LATEST_NEW_LIMIT, max = 200) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(n, max);
+};
+
+/**
+ * ✅ NEW (Q1): Normalize + validate WebSeries episodes for:
+ * - seasonNumber support
+ * - 3 servers per episode (video, videoUrl2, videoUrl3)
+ *
+ * Notes:
+ * - Backwards compatible: we ONLY normalize when episodes are provided
+ *   (create/bulkCreate always provides; update only if episodes present).
+ * - Old docs missing seasonNumber default to 1 on frontend; here we default to 1
+ *   when missing in payload.
+ */
+const normalizeWebSeriesEpisodes = (episodes) => {
+  if (!Array.isArray(episodes) || episodes.length === 0) {
+    throw new Error('Episodes are required for web series');
+  }
+
+  return episodes.map((ep, idx) => {
+    const episodeNumber = Number(ep?.episodeNumber);
+    if (!Number.isFinite(episodeNumber) || episodeNumber < 1) {
+      throw new Error(
+        `Episode index ${idx}: episodeNumber must be a number >= 1`
+      );
+    }
+
+    const seasonRaw = ep?.seasonNumber;
+    const seasonNumber =
+      seasonRaw === undefined || seasonRaw === null || seasonRaw === ''
+        ? 1
+        : Number(seasonRaw);
+
+    if (!Number.isFinite(seasonNumber) || seasonNumber < 1) {
+      throw new Error(
+        `Episode ${episodeNumber}: seasonNumber must be a number >= 1`
+      );
+    }
+
+    const video1 = String(ep?.video || '').trim();
+    const video2 = String(ep?.videoUrl2 || '').trim();
+    const video3 = String(ep?.videoUrl3 || '').trim();
+
+    if (!video1) {
+      throw new Error(`Episode ${episodeNumber}: Server 1 (video) is required`);
+    }
+    if (!video2) {
+      throw new Error(
+        `Episode ${episodeNumber}: Server 2 (videoUrl2) is required`
+      );
+    }
+    if (!video3) {
+      throw new Error(
+        `Episode ${episodeNumber}: Server 3 (videoUrl3) is required`
+      );
+    }
+
+    return {
+      // keep subdoc _id if the client sent it (EditMovie typically does)
+      ...(ep?._id ? { _id: ep._id } : {}),
+
+      seasonNumber,
+      episodeNumber,
+      title: typeof ep?.title === 'string' ? ep.title : '',
+      desc: ep?.desc,
+      duration: ep?.duration,
+
+      // 3 servers
+      video: video1,
+      videoUrl2: video2,
+      videoUrl3: video3,
+    };
+  });
+};
+
 /* ================================================================== */
 /*                      PUBLIC / ADMIN CONTROLLERS                    */
 /* ================================================================== */
@@ -135,7 +212,7 @@ const getMovies = asyncHandler(async (req, res) => {
   try {
     const { category, time, language, rate, year, search, browseBy } = req.query;
 
-    // ✅ NEW: starts-with search only
+    // ✅ starts-with search only
     const searchRegex = buildStartsWithRegex(search);
 
     let baseFilter = {
@@ -211,7 +288,6 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
   try {
     const { category, time, language, rate, year, search, browseBy } = req.query;
 
-    // ✅ NEW: starts-with search only (admin too)
     const searchRegex = buildStartsWithRegex(search);
 
     let baseFilter = {
@@ -432,6 +508,7 @@ const updateMovie = asyncHandler(async (req, res) => {
       year,
       video,
       videoUrl2,
+      videoUrl3, // ✅ NEW (Q1)
       episodes,
       casts,
       downloadUrl,
@@ -494,14 +571,19 @@ const updateMovie = asyncHandler(async (req, res) => {
     if (type === 'Movie') {
       movie.video = video || movie.video;
       movie.videoUrl2 = videoUrl2 || movie.videoUrl2;
+      movie.videoUrl3 = videoUrl3 || movie.videoUrl3; // ✅ NEW (Q1)
       movie.downloadUrl =
         downloadUrl !== undefined ? downloadUrl : movie.downloadUrl;
       movie.episodes = undefined;
     } else if (type === 'WebSeries') {
-      movie.episodes = episodes || movie.episodes;
+      // ✅ NEW (Q1): normalize episodes ONLY if provided
+      if (episodes !== undefined) {
+        movie.episodes = normalizeWebSeriesEpisodes(episodes);
+      }
       movie.video = undefined;
       movie.downloadUrl = undefined;
       movie.videoUrl2 = undefined;
+      movie.videoUrl3 = undefined; // ✅ NEW (Q1)
     } else if (type) {
       res.status(400);
       throw new Error('Invalid type specified for update');
@@ -572,6 +654,7 @@ const createMovie = asyncHandler(async (req, res) => {
       year,
       video,
       videoUrl2,
+      videoUrl3, // ✅ NEW (Q1)
       episodes,
       casts,
       downloadUrl,
@@ -684,17 +767,23 @@ const createMovie = asyncHandler(async (req, res) => {
         res.status(400);
         throw new Error('Second server (videoUrl2) is required');
       }
+      if (!videoUrl3) {
+        // ✅ NEW (Q1)
+        res.status(400);
+        throw new Error('Third server (videoUrl3) is required');
+      }
+
       movieData.video = video;
       movieData.videoUrl2 = videoUrl2;
-      if (downloadUrl) {
-        movieData.downloadUrl = downloadUrl;
-      }
+      movieData.videoUrl3 = videoUrl3; // ✅ NEW (Q1)
+      if (downloadUrl) movieData.downloadUrl = downloadUrl;
     } else if (type === 'WebSeries') {
       if (!episodes || episodes.length === 0) {
         res.status(400);
         throw new Error('Episodes are required for web series');
       }
-      movieData.episodes = episodes;
+      // ✅ NEW (Q1)
+      movieData.episodes = normalizeWebSeriesEpisodes(episodes);
     } else {
       res.status(400);
       throw new Error('Invalid type');
@@ -718,6 +807,88 @@ const getLatestMovies = asyncHandler(async (_req, res) => {
       .limit(15)
       .select('-reviews');
     res.json(movies);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+/* ================================================================== */
+/* ✅ NEW: "Latest New" list for HomeScreen                            */
+/* ================================================================== */
+
+// PUBLIC: latestNew (only published)
+const getLatestNewMovies = asyncHandler(async (req, res) => {
+  try {
+    const limit = clampLimit(req.query.limit, LATEST_NEW_LIMIT, 200);
+
+    const movies = await Movie.find({
+      ...publicVisibilityFilter,
+      latestNew: true,
+    })
+      .sort({ latestNewAt: -1, createdAt: -1 })
+      .limit(limit)
+      .select(
+        '_id slug name titleImage thumbnailInfo type category image latestNew latestNewAt'
+      )
+      .lean();
+
+    res.json(movies);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// ADMIN: latestNew (includes drafts/unpublished)
+const getLatestNewMoviesAdmin = asyncHandler(async (req, res) => {
+  try {
+    const limit = clampLimit(req.query.limit, LATEST_NEW_LIMIT, 200);
+
+    const movies = await Movie.find({
+      latestNew: true,
+    })
+      .sort({ latestNewAt: -1, createdAt: -1 })
+      .limit(limit)
+      .select(
+        '_id slug name titleImage thumbnailInfo type category image latestNew latestNewAt isPublished'
+      )
+      .lean();
+
+    res.json(movies);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// ADMIN: set/unset latestNew flag (does NOT affect Movies page ordering)
+const setLatestNewMovies = asyncHandler(async (req, res) => {
+  try {
+    const { movieIds, value = true } = req.body || {};
+
+    if (!Array.isArray(movieIds) || movieIds.length === 0) {
+      res.status(400);
+      throw new Error('movieIds array is required');
+    }
+
+    const validIds = movieIds.filter((id) => isValidObjectId(id));
+    if (!validIds.length) {
+      res.status(400);
+      throw new Error('No valid movieIds provided');
+    }
+
+    const boolValue = !!value;
+    const now = new Date();
+
+    const update = boolValue
+      ? { $set: { latestNew: true, latestNewAt: now } }
+      : { $set: { latestNew: false, latestNewAt: null } };
+
+    const result = await Movie.updateMany({ _id: { $in: validIds } }, update);
+
+    res.status(200).json({
+      message: boolValue ? 'Added to Latest New' : 'Removed from Latest New',
+      matched: result.matchedCount ?? result.n ?? 0,
+      modified: result.modifiedCount ?? result.nModified ?? 0,
+    });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -860,9 +1031,7 @@ const generateSitemap = asyncHandler(async (req, res) => {
         const encoded = encodeURIComponent(
           'https://www.moviefrost.com/sitemap.xml'
         );
-        fetch('https://www.google.com/ping?sitemap=' + encoded).catch(
-          () => {}
-        );
+        fetch('https://www.google.com/ping?sitemap=' + encoded).catch(() => {});
         fetch('https://www.bing.com/ping?sitemap=' + encoded).catch(() => {});
       }
     } catch (_) {}
@@ -903,7 +1072,9 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'userId',
     'slug',
   ];
-  const allowedMovieOnly = ['video', 'videoUrl2', 'downloadUrl'];
+
+  // ✅ NEW (Q1): include videoUrl3 for Movie
+  const allowedMovieOnly = ['video', 'videoUrl2', 'videoUrl3', 'downloadUrl'];
   const allowedWebOnly = ['episodes'];
 
   const operations = [];
@@ -924,11 +1095,8 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
       }
 
       let filter;
-      if (_id) {
-        filter = { _id };
-      } else {
-        filter = { name: name.trim(), type };
-      }
+      if (_id) filter = { _id };
+      else filter = { name: name.trim(), type };
 
       const updateSet = { type };
       const updateUnset = {};
@@ -945,18 +1113,25 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
         });
         updateUnset['episodes'] = '';
       } else {
+        // WebSeries
         allowedWebOnly.forEach((f) => {
-          if (f in item) updateSet[f] = item[f];
+          if (f in item) {
+            if (f === 'episodes') {
+              updateSet[f] = normalizeWebSeriesEpisodes(item[f]);
+            } else {
+              updateSet[f] = item[f];
+            }
+          }
         });
+
         updateUnset['video'] = '';
         updateUnset['videoUrl2'] = '';
+        updateUnset['videoUrl3'] = ''; // ✅ NEW (Q1)
         updateUnset['downloadUrl'] = '';
       }
 
       const updateDoc = { $set: updateSet };
-      if (Object.keys(updateUnset).length) {
-        updateDoc.$unset = updateUnset;
-      }
+      if (Object.keys(updateUnset).length) updateDoc.$unset = updateUnset;
 
       operations.push({
         updateMany: {
@@ -1088,6 +1263,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         year,
         video,
         videoUrl2,
+        videoUrl3, // ✅ NEW (Q1)
         episodes,
         casts,
         downloadUrl,
@@ -1158,13 +1334,19 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         if (!video) throw new Error('Movie video URL (server1) is required');
         if (!videoUrl2)
           throw new Error('Second server (videoUrl2) is required');
+        if (!videoUrl3)
+          throw new Error('Third server (videoUrl3) is required'); // ✅ NEW (Q1)
+
         movieData.video = video;
         movieData.videoUrl2 = videoUrl2;
+        movieData.videoUrl3 = videoUrl3; // ✅ NEW (Q1)
         if (downloadUrl) movieData.downloadUrl = downloadUrl;
       } else if (type === 'WebSeries') {
         if (!episodes || episodes.length === 0)
           throw new Error('Episodes are required for web series');
-        movieData.episodes = episodes;
+
+        // ✅ NEW (Q1)
+        movieData.episodes = normalizeWebSeriesEpisodes(episodes);
       } else {
         throw new Error('Invalid type');
       }
@@ -1394,6 +1576,12 @@ export {
   deleteAllMovies,
   createMovie,
   getLatestMovies,
+
+  // ✅ Latest New
+  getLatestNewMovies,
+  getLatestNewMoviesAdmin,
+  setLatestNewMovies,
+
   getDistinctBrowseBy,
   adminReplyReview,
   generateSitemap,
