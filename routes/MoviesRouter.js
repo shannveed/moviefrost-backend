@@ -18,6 +18,9 @@ import {
   setBannerMovies,
 } from '../Controllers/BannerController.js';
 
+// ✅ NEW: reorder Latest New
+import { reorderLatestNewMovies } from '../Controllers/LatestNewReorderController.js';
+
 const router = express.Router();
 
 // * PUBLIC ROUTES *
@@ -75,12 +78,7 @@ router.post(
 );
 
 // * ADMIN ROUTES *
-router.put(
-  '/bulk-exact',
-  protect,
-  admin,
-  moviesController.bulkExactUpdateMovies
-);
+router.put('/bulk-exact', protect, admin, moviesController.bulkExactUpdateMovies);
 router.post('/bulk-delete', protect, admin, moviesController.bulkDeleteByName);
 router.post('/bulk', protect, admin, moviesController.bulkCreateMovies);
 
@@ -90,6 +88,14 @@ router.post(
   protect,
   admin,
   moviesController.setLatestNewMovies
+);
+
+// ✅ NEW: reorder Latest New (Trending)
+router.post(
+  '/admin/latest-new/reorder',
+  protect,
+  admin,
+  reorderLatestNewMovies
 );
 
 // ✅ NEW: set/unset Banner flag
