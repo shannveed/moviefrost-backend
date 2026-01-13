@@ -56,7 +56,11 @@ const moviesSchema = mongoose.Schema(
       trim: true,
     },
 
-    desc: { type: String, required: true },
+    desc: {
+      type: String,
+      required: true,
+      maxlength: 5000, // ✅ increased from default
+    },
 
     titleImage: { type: String, required: true },
 
@@ -113,10 +117,23 @@ const moviesSchema = mongoose.Schema(
       },
     ],
 
-    // SEO Fields
-    seoTitle: { type: String, maxlength: 60 },
-    seoDescription: { type: String, maxlength: 160 },
-    seoKeywords: { type: String },
+      // SEO Fields
+    seoTitle: {
+      type: String,
+      maxlength: 100, // ✅ increased
+      trim: true,
+    },
+
+    seoDescription: {
+      type: String,
+      maxlength: 300, // ✅ increased
+      trim: true,
+    },
+
+    seoKeywords: {
+      type: String,
+      trim: true,
+    },
 
     viewCount: { type: Number, default: 0 },
 

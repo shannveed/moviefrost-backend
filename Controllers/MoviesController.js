@@ -748,7 +748,7 @@ const createMovie = asyncHandler(async (req, res) => {
       userId: req.user._id,
       casts: casts || [],
       seoTitle: seoTitle || name,
-      seoDescription: seoDescription || desc.substring(0, 155),
+      seoDescription: seoDescription || desc.substring(0, 300),
       seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
       viewCount: 0,
       latest: !!latest,
