@@ -3,8 +3,9 @@ import asyncHandler from 'express-async-handler';
 import Movie from '../Models/MoviesModel.js';
 import Categories from '../Models/CategoriesModel.js';
 
-const FRONTEND_BASE_URL =
-  process.env.PUBLIC_FRONTEND_URL || 'https://www.moviefrost.com';
+const FRONTEND_BASE_URL = (
+  process.env.PUBLIC_FRONTEND_URL || 'https://www.moviefrost.com'
+).replace(/\/+$/, '');
 
 // HTML-escape values in XML
 const escapeXml = (unsafe = '') =>
@@ -15,96 +16,131 @@ const escapeXml = (unsafe = '') =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
 
-// Same visibility rule: only movies where isPublished !== false
+// Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
+
+/**
+ * Convert any stored value (absolute URL, protocol-relative, domain-only, or path)
+ * into a valid absolute HTTPS URL.
+ */
+const toAbsoluteUrl = (maybeUrl, base = FRONTEND_BASE_URL) => {
+  const u = String(maybeUrl || '').trim();
+  if (!u) return '';
+
+  // already absolute
+  if (/^https?:\/\//i.test(u)) return u;
+
+  // protocol-relative
+  if (u.startsWith('//')) return `https:${u}`;
+
+  // looks like "cdn.domain.com/path" (no scheme)
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(u)) {
+    return `https://${u}`;
+  }
+
+  // relative path
+  return `${base}${u.startsWith('/') ? '' : '/'}${u}`;
+};
+
+const pickBestThumbnail = (...candidates) => {
+  for (const c of candidates) {
+    const abs = toAbsoluteUrl(c);
+    if (abs) return abs;
+  }
+  // guaranteed existing fallback (your logo)
+  return toAbsoluteUrl('/images/MOVIEFROST.png');
+};
+
+const setSitemapHeaders = (res) => {
+  res.header('Content-Type', 'application/xml; charset=UTF-8');
+  // Helps Vercel edge caching + reduces DB hits and timeouts
+  res.header(
+    'Cache-Control',
+    'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400'
+  );
+};
+
+const pingSearchEngines = (sitemapUrl) => {
+  try {
+    if (process.env.NODE_ENV !== 'production') return;
+    const encoded = encodeURIComponent(sitemapUrl);
+    fetch(`https://www.google.com/ping?sitemap=${encoded}`).catch(() => {});
+    fetch(`https://www.bing.com/ping?sitemap=${encoded}`).catch(() => {});
+  } catch {
+    // ignore ping failures
+  }
+};
 
 // ============== MAIN SITEMAP (pages) ==================
 // GET /sitemap.xml
 export const generateSitemap = asyncHandler(async (_req, res) => {
-  try {
-    const [movies, categories] = await Promise.all([
-      Movie.find(publicVisibilityFilter)
-        .select('_id slug updatedAt')
-        .lean(),
-      Categories.find({}).select('title updatedAt').lean(),
-    ]);
+  const [movies, categories] = await Promise.all([
+    Movie.find(publicVisibilityFilter).select('_id slug updatedAt').lean(),
+    Categories.find({}).select('title updatedAt').lean(),
+  ]);
 
-    const staticPages = [
-      {
-        loc: `${FRONTEND_BASE_URL}/`,
-        changefreq: 'daily',
-        priority: '1.0',
-      },
-      {
-        loc: `${FRONTEND_BASE_URL}/#popular`,
-        changefreq: 'daily',
-        priority: '0.8',
-      },
-      {
-        loc: `${FRONTEND_BASE_URL}/movies`,
-        changefreq: 'daily',
-        priority: '0.9',
-      },
-      {
-        loc: `${FRONTEND_BASE_URL}/about-us`,
-        changefreq: 'weekly',
-        priority: '0.7',
-      },
-      {
-        loc: `${FRONTEND_BASE_URL}/contact-us`,
-        changefreq: 'weekly',
-        priority: '0.7',
-      },
-    ];
+  const staticPages = [
+    { loc: `${FRONTEND_BASE_URL}/`, changefreq: 'daily', priority: '1.0' },
+    {
+      loc: `${FRONTEND_BASE_URL}/#popular`,
+      changefreq: 'daily',
+      priority: '0.8',
+    },
+    {
+      loc: `${FRONTEND_BASE_URL}/movies`,
+      changefreq: 'daily',
+      priority: '0.9',
+    },
+    {
+      loc: `${FRONTEND_BASE_URL}/about-us`,
+      changefreq: 'weekly',
+      priority: '0.7',
+    },
+    {
+      loc: `${FRONTEND_BASE_URL}/contact-us`,
+      changefreq: 'weekly',
+      priority: '0.7',
+    },
+  ];
 
-    const urls = [];
+  const urls = [];
 
-    // Static pages
-    for (const page of staticPages) {
-      urls.push({
-        loc: page.loc,
-        changefreq: page.changefreq,
-        priority: page.priority,
-      });
-    }
+  // Static pages
+  urls.push(...staticPages);
 
-    // Movie detail pages (prefer slug)
-    for (const movie of movies) {
-      const lastmod = movie.updatedAt
-        ? new Date(movie.updatedAt).toISOString()
-        : undefined;
+  // Movie detail pages
+  for (const movie of movies) {
+    const lastmod = movie.updatedAt
+      ? new Date(movie.updatedAt).toISOString()
+      : undefined;
 
-      const pathSegment = movie.slug || movie._id;
+    const pathSegment = movie.slug || movie._id;
 
-      urls.push({
-        loc: `${FRONTEND_BASE_URL}/movie/${pathSegment}`,
-        lastmod,
-        changefreq: 'weekly',
-        priority: '0.8',
-      });
-    }
+    urls.push({
+      loc: `${FRONTEND_BASE_URL}/movie/${pathSegment}`,
+      lastmod,
+      changefreq: 'weekly',
+      priority: '0.8',
+    });
+  }
 
-    // Category listing pages
-    for (const cat of categories) {
-      const title = cat.title || '';
-      const lastmod = cat.updatedAt
-        ? new Date(cat.updatedAt).toISOString()
-        : undefined;
+  // Category listing pages
+  for (const cat of categories) {
+    const title = cat.title || '';
+    const lastmod = cat.updatedAt
+      ? new Date(cat.updatedAt).toISOString()
+      : undefined;
 
-      urls.push({
-        loc: `${FRONTEND_BASE_URL}/movies?category=${encodeURIComponent(
-          title
-        )}`,
-        lastmod,
-        changefreq: 'weekly',
-        priority: '0.7',
-      });
-    }
+    urls.push({
+      loc: `${FRONTEND_BASE_URL}/movies?category=${encodeURIComponent(title)}`,
+      lastmod,
+      changefreq: 'weekly',
+      priority: '0.7',
+    });
+  }
 
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset
-  xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
->
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls
   .map((u) => {
     return `  <url>
@@ -117,46 +153,27 @@ ${urls
   .join('\n')}
 </urlset>`;
 
-    res.header('Content-Type', 'application/xml; charset=UTF-8');
-    res.send(xml);
+  setSitemapHeaders(res);
+  res.send(xml);
 
-    // Ping Google & Bing (only in production)
-    try {
-      if (process.env.NODE_ENV === 'production') {
-        const sitemapUrl = encodeURIComponent(
-          `${FRONTEND_BASE_URL}/sitemap.xml`
-        );
-        fetch(`https://www.google.com/ping?sitemap=${sitemapUrl}`).catch(
-          () => {}
-        );
-        fetch(`https://www.bing.com/ping?sitemap=${sitemapUrl}`).catch(
-          () => {}
-        );
-      }
-    } catch {
-      // ignore ping failures
-    }
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  pingSearchEngines(`${FRONTEND_BASE_URL}/sitemap.xml`);
 });
 
 // ============== VIDEO SITEMAP ==================
 // GET /sitemap-videos.xml
 export const generateVideoSitemap = asyncHandler(async (_req, res) => {
-  try {
-    // Only include movies that actually have video URLs AND are published
-    const movies = await Movie.find({
-      ...publicVisibilityFilter,
-      type: 'Movie',
-      video: { $ne: null },
-    })
-      .select(
-        '_id slug name desc image titleImage createdAt updatedAt video downloadUrl time category seoTitle seoDescription seoKeywords viewCount'
-      )
-      .lean();
+  // Only include published titles that actually have a video URL
+  const movies = await Movie.find({
+    ...publicVisibilityFilter,
+    type: 'Movie',
+    video: { $nin: [null, ''] },
+  })
+    .select(
+      '_id slug name desc image titleImage createdAt updatedAt video downloadUrl time category seoTitle seoDescription seoKeywords viewCount'
+    )
+    .lean();
 
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset
   xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
   xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
@@ -165,24 +182,28 @@ ${movies
   .map((m) => {
     const pathSegment = m.slug || m._id;
     const pageUrl = `${FRONTEND_BASE_URL}/watch/${pathSegment}`;
-    const contentUrl = m.downloadUrl || m.video || pageUrl;
 
-    const rawThumb = m.image || m.titleImage || `${FRONTEND_BASE_URL}/og-image.jpg`;
-    const thumb =
-      typeof rawThumb === 'string' && rawThumb.startsWith('http')
-        ? rawThumb
-        : `${FRONTEND_BASE_URL}${
-            rawThumb.startsWith('/') ? '' : '/'
-          }${rawThumb}`;
+    const contentUrlRaw = m.downloadUrl || m.video || pageUrl;
+    const contentUrl = toAbsoluteUrl(contentUrlRaw, FRONTEND_BASE_URL);
+
+    // ✅ This is the important part (thumbnail)
+    const thumb = pickBestThumbnail(
+      m.image,
+      m.titleImage,
+      '/og-image.jpg',
+      '/images/MOVIEFROST.png'
+    );
 
     const title = m.seoTitle || m.name || 'Movie';
     const descriptionRaw =
       (m.seoDescription || m.desc || '').substring(0, 2048) ||
       'Watch free movies and web series online on MovieFrost.';
-    const uploadDate = (m.createdAt || m.updatedAt
+
+    const uploadDate = m.createdAt || m.updatedAt
       ? new Date(m.createdAt || m.updatedAt).toISOString()
-      : new Date().toISOString());
-    const durationSeconds = m.time ? m.time * 60 : undefined;
+      : new Date().toISOString();
+
+    const durationSeconds = m.time ? Number(m.time) * 60 : undefined;
 
     const tags =
       typeof m.seoKeywords === 'string'
@@ -212,6 +233,11 @@ ${movies
           : ''
       }
       ${
+        typeof m.viewCount === 'number'
+          ? `<video:view_count>${m.viewCount}</video:view_count>`
+          : ''
+      }
+      ${
         tags.length
           ? tags
               .map((t) => `      <video:tag>${escapeXml(t)}</video:tag>`)
@@ -225,9 +251,8 @@ ${movies
   .join('\n')}
 </urlset>`;
 
-    res.header('Content-Type', 'application/xml; charset=UTF-8');
-    res.send(xml);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  setSitemapHeaders(res);
+  res.send(xml);
+
+  pingSearchEngines(`${FRONTEND_BASE_URL}/sitemap-videos.xml`);
 });
