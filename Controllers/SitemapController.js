@@ -9,7 +9,7 @@ const FRONTEND_BASE_URL = (
 
 // HTML-escape values in XML
 const escapeXml = (unsafe = '') =>
-  String(unsafe || '')
+  String(unsafe ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -42,6 +42,25 @@ const toAbsoluteUrl = (maybeUrl, base = FRONTEND_BASE_URL) => {
   return `${base}${u.startsWith('/') ? '' : '/'}${u}`;
 };
 
+const normalizeUrlForCompare = (url) => {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    u.hash = '';
+    // Keep search (query string) because Google compares values as-is.
+    let s = u.toString();
+    // Normalize trailing slash except root
+    if (s.endsWith('/') && u.pathname !== '/') s = s.slice(0, -1);
+    return s;
+  } catch {
+    return raw.replace(/\/+$/, '');
+  }
+};
+
+const urlsEqual = (a, b) =>
+  normalizeUrlForCompare(a) && normalizeUrlForCompare(a) === normalizeUrlForCompare(b);
+
 const pickBestThumbnail = (...candidates) => {
   for (const c of candidates) {
     const abs = toAbsoluteUrl(c);
@@ -69,6 +88,49 @@ const pingSearchEngines = (sitemapUrl) => {
   } catch {
     // ignore ping failures
   }
+};
+
+/**
+ * Google video sitemap duration rules:
+ * - integer seconds
+ * - recommended range: 1..28800 (8 hours)
+ * If invalid → omit <video:duration>
+ */
+const toVideoDurationSeconds = (minutesValue) => {
+  const n = Number(minutesValue);
+
+  if (!Number.isFinite(n) || n <= 0) return null;
+
+  // Your DB stores minutes, video sitemap needs seconds
+  const seconds = Math.round(n * 60);
+
+  // Google limit for video sitemap duration
+  if (seconds < 1 || seconds > 28800) return null;
+
+  return seconds;
+};
+
+const pickPlayerUrl = (movieDoc, pageUrl) => {
+  // We use the SAME URL you use inside your iframe on WatchPage
+  // (server1 first, then fallbacks)
+  const candidates = [movieDoc?.video, movieDoc?.videoUrl2, movieDoc?.videoUrl3];
+
+  for (const c of candidates) {
+    const abs = toAbsoluteUrl(c, FRONTEND_BASE_URL);
+    if (!abs) continue;
+    if (!urlsEqual(abs, pageUrl)) return abs;
+  }
+
+  return '';
+};
+
+const pickContentUrl = (movieDoc, pageUrl, playerUrl) => {
+  // Only include content_loc if we have a separate URL (usually downloadUrl)
+  const abs = toAbsoluteUrl(movieDoc?.downloadUrl, FRONTEND_BASE_URL);
+  if (!abs) return '';
+  if (urlsEqual(abs, pageUrl)) return '';
+  if (playerUrl && urlsEqual(abs, playerUrl)) return '';
+  return abs;
 };
 
 // ============== MAIN SITEMAP (pages) ==================
@@ -169,69 +231,77 @@ export const generateVideoSitemap = asyncHandler(async (_req, res) => {
     video: { $nin: [null, ''] },
   })
     .select(
-      '_id slug name desc image titleImage createdAt updatedAt video downloadUrl time category seoTitle seoDescription seoKeywords viewCount'
+      '_id slug name desc image titleImage createdAt updatedAt video videoUrl2 videoUrl3 downloadUrl time category seoTitle seoDescription seoKeywords viewCount'
     )
     .lean();
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset
-  xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-  xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
->
-${movies
-  .map((m) => {
-    const pathSegment = m.slug || m._id;
-    const pageUrl = `${FRONTEND_BASE_URL}/watch/${pathSegment}`;
+  const xmlRows = movies
+    .map((m) => {
+      const pathSegment = m.slug || m._id;
 
-    const contentUrlRaw = m.downloadUrl || m.video || pageUrl;
-    const contentUrl = toAbsoluteUrl(contentUrlRaw, FRONTEND_BASE_URL);
+      // ✅ Landing page (contains your player UI)
+      const pageUrl = `${FRONTEND_BASE_URL}/watch/${pathSegment}`;
 
-    // ✅ This is the important part (thumbnail)
-    const thumb = pickBestThumbnail(
-      m.image,
-      m.titleImage,
-      '/og-image.jpg',
-      '/images/MOVIEFROST.png'
-    );
+      // ✅ Actual player URL (the same URL you use in iframe src)
+      const playerUrl = pickPlayerUrl(m, pageUrl);
 
-    const title = m.seoTitle || m.name || 'Movie';
-    const descriptionRaw =
-      (m.seoDescription || m.desc || '').substring(0, 2048) ||
-      'Watch free movies and web series online on MovieFrost.';
+      // If we somehow cannot determine playerUrl, skip this entry
+      if (!playerUrl) return '';
 
-    const uploadDate = m.createdAt || m.updatedAt
-      ? new Date(m.createdAt || m.updatedAt).toISOString()
-      : new Date().toISOString();
+      // Optional: direct downloadable / raw content URL (only when different)
+      const contentUrl = pickContentUrl(m, pageUrl, playerUrl);
 
-    const durationSeconds = m.time ? Number(m.time) * 60 : undefined;
+      // Thumbnail
+      const thumb = pickBestThumbnail(
+        m.image,
+        m.titleImage,
+        '/og-image.jpg',
+        '/images/MOVIEFROST.png'
+      );
 
-    const tags =
-      typeof m.seoKeywords === 'string'
-        ? m.seoKeywords
-            .split(',')
-            .map((t) => t.trim())
-            .filter(Boolean)
-        : [];
+      const title = String(m.seoTitle || m.name || 'Movie').substring(0, 100);
 
-    return `  <url>
+      const descriptionRaw =
+        (m.seoDescription || m.desc || '').substring(0, 2048) ||
+        'Watch free movies and web series online on MovieFrost.';
+
+      const uploadDate =
+        m.createdAt || m.updatedAt
+          ? new Date(m.createdAt || m.updatedAt).toISOString()
+          : new Date().toISOString();
+
+      // ✅ Duration (valid seconds only, else omitted)
+      const durationSeconds = toVideoDurationSeconds(m.time);
+
+      const tags =
+        typeof m.seoKeywords === 'string'
+          ? m.seoKeywords
+              .split(',')
+              .map((t) => t.trim())
+              .filter(Boolean)
+          : [];
+
+      return `  <url>
     <loc>${escapeXml(pageUrl)}</loc>
     <video:video>
       <video:thumbnail_loc>${escapeXml(thumb)}</video:thumbnail_loc>
       <video:title>${escapeXml(title)}</video:title>
       <video:description>${escapeXml(descriptionRaw)}</video:description>
-      <video:content_loc>${escapeXml(contentUrl)}</video:content_loc>
-      <video:player_loc>${escapeXml(pageUrl)}</video:player_loc>
+      ${
+        contentUrl
+          ? `<video:content_loc>${escapeXml(contentUrl)}</video:content_loc>`
+          : ''
+      }
+      <video:player_loc allow_embed="yes">${escapeXml(
+        playerUrl
+      )}</video:player_loc>
       <video:publication_date>${escapeXml(uploadDate)}</video:publication_date>
       ${
         durationSeconds
           ? `<video:duration>${durationSeconds}</video:duration>`
           : ''
       }
-      ${
-        m.category
-          ? `<video:category>${escapeXml(m.category)}</video:category>`
-          : ''
-      }
+      ${m.category ? `<video:category>${escapeXml(m.category)}</video:category>` : ''}
       ${
         typeof m.viewCount === 'number'
           ? `<video:view_count>${m.viewCount}</video:view_count>`
@@ -239,16 +309,22 @@ ${movies
       }
       ${
         tags.length
-          ? tags
-              .map((t) => `      <video:tag>${escapeXml(t)}</video:tag>`)
-              .join('\n')
+          ? tags.map((t) => `      <video:tag>${escapeXml(t)}</video:tag>`).join('\n')
           : ''
       }
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>`;
-  })
-  .join('\n')}
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset
+  xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+>
+${xmlRows}
 </urlset>`;
 
   setSitemapHeaders(res);
