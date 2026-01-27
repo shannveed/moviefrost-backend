@@ -116,6 +116,9 @@ const moviesSchema = mongoose.Schema(
         image: { type: String, required: true },
       },
     ],
+    // ✅ Director (Phase 1.5)
+director: { type: String, trim: true, default: '' },
+
 
       // SEO Fields
     seoTitle: {

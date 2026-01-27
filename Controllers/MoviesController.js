@@ -359,58 +359,47 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
 
 // PUBLIC: get movie by id/slug (only published)
 const getMovieById = asyncHandler(async (req, res) => {
-  try {
-    const param = req.params.id;
-    const movie = await findMovieByIdOrSlug(param, publicVisibilityFilter);
+  const param = req.params.id;
+  const movie = await findMovieByIdOrSlug(param, publicVisibilityFilter);
 
-    if (movie) {
-      if (!movie.slug) {
-        const slugYear =
-          typeof movie.year === 'number'
-            ? movie.year
-            : Number(movie.year) || undefined;
-        movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
-      }
-
-      movie.viewCount = (movie.viewCount || 0) + 1;
-      await movie.save();
-
-      res.json(movie);
-    } else {
-      res.status(404);
-      throw new Error('Movie not found');
-    }
-  } catch (error) {
-    res.status(400).json({ message: error.message });
+  if (!movie) {
+    res.status(404);
+    throw new Error('Movie not found');
   }
+
+  if (!movie.slug) {
+    const slugYear =
+      typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+    movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
+  }
+
+  movie.viewCount = (movie.viewCount || 0) + 1;
+  await movie.save();
+
+  res.json(movie);
 });
+
 
 // ADMIN: get movie by id/slug (includes drafts)
 const getMovieByIdAdmin = asyncHandler(async (req, res) => {
-  try {
-    const param = req.params.id;
-    const movie = await findMovieByIdOrSlug(param, {});
+  const param = req.params.id;
+  const movie = await findMovieByIdOrSlug(param, {});
 
-    if (movie) {
-      if (!movie.slug) {
-        const slugYear =
-          typeof movie.year === 'number'
-            ? movie.year
-            : Number(movie.year) || undefined;
-        movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
-      }
-
-      movie.viewCount = (movie.viewCount || 0) + 1;
-      await movie.save();
-
-      res.json(movie);
-    } else {
-      res.status(404);
-      throw new Error('Movie not found');
-    }
-  } catch (error) {
-    res.status(400).json({ message: error.message });
+  if (!movie) {
+    res.status(404);
+    throw new Error('Movie not found');
   }
+
+  if (!movie.slug) {
+    const slugYear =
+      typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+    movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
+  }
+
+  movie.viewCount = (movie.viewCount || 0) + 1;
+  await movie.save();
+
+  res.json(movie);
 });
 
 // PUBLIC: top rated (only published)
@@ -511,6 +500,7 @@ const updateMovie = asyncHandler(async (req, res) => {
       videoUrl3, // ✅ NEW (Q1)
       episodes,
       casts,
+      director,
       downloadUrl,
       seoTitle,
       seoDescription,
@@ -556,6 +546,7 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.language = language || movie.language;
     movie.year = year || movie.year;
     movie.casts = casts || movie.casts;
+    if (director !== undefined) {     movie.director = String(director || '').trim();   }
     movie.seoTitle = seoTitle || movie.seoTitle;
     movie.seoDescription = seoDescription || movie.seoDescription;
     movie.seoKeywords = seoKeywords || movie.seoKeywords;
@@ -657,6 +648,7 @@ const createMovie = asyncHandler(async (req, res) => {
       videoUrl3, // ✅ NEW (Q1)
       episodes,
       casts,
+      director,
       downloadUrl,
       seoTitle,
       seoDescription,
@@ -747,6 +739,7 @@ const createMovie = asyncHandler(async (req, res) => {
       year: numericYear || year,
       userId: req.user._id,
       casts: casts || [],
+      director: String(director || '').trim(),
       seoTitle: seoTitle || name,
       seoDescription: seoDescription || desc.substring(0, 300),
       seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
@@ -1063,6 +1056,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'rate',
     'numberOfReviews',
     'casts',
+    'director',
     'seoTitle',
     'seoDescription',
     'seoKeywords',
@@ -1266,6 +1260,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         videoUrl3, // ✅ NEW (Q1)
         episodes,
         casts,
+        director,
         downloadUrl,
         seoTitle,
         seoDescription,
@@ -1318,6 +1313,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         year: numericYear || year,
         userId: req.user._id,
         casts: casts || [],
+        director: String(director || '').trim(),
         seoTitle: seoTitle || name,
         seoDescription: seoDescription || desc.substring(0, 155),
         seoKeywords:
