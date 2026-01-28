@@ -19,6 +19,7 @@ import Uploadrouter from './Controllers/UploadFile.js';
 import {
   generateSitemap,
   generateVideoSitemap,
+  generateSitemapIndex,
 } from './Controllers/SitemapController.js';
 import notificationsRouter from './routes/NotificationsRouter.js';
 import watchRequestsRouter from './routes/WatchRequestsRouter.js';
@@ -171,6 +172,7 @@ Sitemap: https://www.moviefrost.com/sitemap-videos.xml
 // Sitemaps from backend
 app.get('/sitemap.xml', generateSitemap);
 app.get('/sitemap-videos.xml', generateVideoSitemap);
+app.get('/sitemap-index.xml', generateSitemapIndex);
 
 // Cache headers for static-like assets if ever served from backend
 app.use((req, res, next) => {

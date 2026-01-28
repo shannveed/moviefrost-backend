@@ -144,11 +144,6 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
   const staticPages = [
     { loc: `${FRONTEND_BASE_URL}/`, changefreq: 'daily', priority: '1.0' },
     {
-      loc: `${FRONTEND_BASE_URL}/#popular`,
-      changefreq: 'daily',
-      priority: '0.8',
-    },
-    {
       loc: `${FRONTEND_BASE_URL}/movies`,
       changefreq: 'daily',
       priority: '0.9',
@@ -331,4 +326,24 @@ ${xmlRows}
   res.send(xml);
 
   pingSearchEngines(`${FRONTEND_BASE_URL}/sitemap-videos.xml`);
+});
+
+// GET /sitemap-index.xml
+export const generateSitemapIndex = asyncHandler(async (_req, res) => {
+  const now = new Date().toISOString();
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap.xml`)}</loc>
+    <lastmod>${escapeXml(now)}</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap-videos.xml`)}</loc>
+    <lastmod>${escapeXml(now)}</lastmod>
+  </sitemap>
+</sitemapindex>`;
+
+  setSitemapHeaders(res);
+  res.send(xml);
 });
