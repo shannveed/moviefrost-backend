@@ -1,4 +1,4 @@
-// UserRouter.js
+// backend/routes/UserRouter.js
 import express from "express";
 import {
   addLikedMovie,
@@ -9,19 +9,24 @@ import {
   getLikedMovies,
   getUsers,
   loginUser,
+  logoutUser, // ✅ NEW
   registerUser,
-  googleLogin, // Import googleLogin
+  googleLogin,
   updateUserProfile,
 } from "../Controllers/UserController.js";
 import { admin, protect } from "../middlewares/Auth.js";
+
 const router = express.Router();
 
-// ******** PUBLIC ROUTES ********
+// * PUBLIC ROUTES *
 router.post("/", registerUser);
 router.post("/login", loginUser);
-router.post("/google-login", googleLogin); // Add Google login route
+router.post("/google-login", googleLogin);
 
-// ********* PRIVATE ROUTE********
+// ✅ NEW: logout clears mf_token cookie for Next SSR
+router.post("/logout", logoutUser);
+
+// * PRIVATE ROUTES *
 router.put("/", protect, updateUserProfile);
 router.delete("/", protect, deleteUserProfile);
 router.put("/password", protect, changeUserPassword);
@@ -29,7 +34,7 @@ router.get("/favorites", protect, getLikedMovies);
 router.post("/favorites", protect, addLikedMovie);
 router.delete("/favorites", protect, deleteLikedMovies);
 
-// ********* ADMIN ROUTES********
+// * ADMIN ROUTES *
 router.get("/", protect, admin, getUsers);
 router.delete("/:id", protect, admin, deleteUser);
 

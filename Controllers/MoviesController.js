@@ -4,6 +4,7 @@ import Movie from '../Models/MoviesModel.js';
 import Categories from '../Models/CategoriesModel.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
+import { ensureMovieExternalRatings } from '../utils/externalRatingsService.js';
 
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
@@ -369,8 +370,17 @@ const getMovieById = asyncHandler(async (req, res) => {
 
   if (!movie.slug) {
     const slugYear =
-      typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+      typeof movie.year === 'number'
+        ? movie.year
+        : Number(movie.year) || undefined;
     movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
+  }
+
+  // ✅ External ratings (IMDb/RT) — best effort, cached
+  try {
+    await ensureMovieExternalRatings(movie);
+  } catch (e) {
+    console.warn('[externalRatings] skipped:', e?.message || e);
   }
 
   movie.viewCount = (movie.viewCount || 0) + 1;
@@ -378,7 +388,6 @@ const getMovieById = asyncHandler(async (req, res) => {
 
   res.json(movie);
 });
-
 
 // ADMIN: get movie by id/slug (includes drafts)
 const getMovieByIdAdmin = asyncHandler(async (req, res) => {
@@ -392,8 +401,17 @@ const getMovieByIdAdmin = asyncHandler(async (req, res) => {
 
   if (!movie.slug) {
     const slugYear =
-      typeof movie.year === 'number' ? movie.year : Number(movie.year) || undefined;
+      typeof movie.year === 'number'
+        ? movie.year
+        : Number(movie.year) || undefined;
     movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
+  }
+
+  // ✅ External ratings (IMDb/RT) — best effort, cached
+  try {
+    await ensureMovieExternalRatings(movie);
+  } catch (e) {
+    console.warn('[externalRatings] skipped:', e?.message || e);
   }
 
   movie.viewCount = (movie.viewCount || 0) + 1;
@@ -501,6 +519,7 @@ const updateMovie = asyncHandler(async (req, res) => {
       episodes,
       casts,
       director,
+      imdbId,
       downloadUrl,
       seoTitle,
       seoDescription,
@@ -529,6 +548,7 @@ const updateMovie = asyncHandler(async (req, res) => {
 
     const originalName = movie.name;
     const originalYear = movie.year;
+    const originalImdbId = String(movie.imdbId || '').trim();
 
     movie.type = type || movie.type;
     movie.name = name || movie.name;
@@ -546,7 +566,28 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.language = language || movie.language;
     movie.year = year || movie.year;
     movie.casts = casts || movie.casts;
-    if (director !== undefined) {     movie.director = String(director || '').trim();   }
+
+    if (director !== undefined) {
+      movie.director = String(director || '').trim();
+    }
+    if (imdbId !== undefined) {
+      movie.imdbId = String(imdbId || '').trim();
+    }
+
+    const identityChanged =
+      movie.name !== originalName ||
+      movie.year !== originalYear ||
+      String(movie.imdbId || '').trim() !== originalImdbId;
+
+    if (identityChanged) {
+      // Force refresh of external ratings when name/year/imdbId changes
+      movie.externalRatingsUpdatedAt = null;
+      movie.externalRatings = {
+        imdb: { rating: null, votes: null, url: '' },
+        rottenTomatoes: { rating: null, url: '' },
+      };
+    }
+
     movie.seoTitle = seoTitle || movie.seoTitle;
     movie.seoDescription = seoDescription || movie.seoDescription;
     movie.seoKeywords = seoKeywords || movie.seoKeywords;
@@ -591,6 +632,18 @@ const updateMovie = asyncHandler(async (req, res) => {
           ? movie.year
           : Number(movie.year) || undefined;
       movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
+    }
+
+    // Best effort: refresh external ratings immediately so Movie page shows it right away
+    if (identityChanged) {
+      try {
+        await ensureMovieExternalRatings(movie);
+      } catch (e) {
+        console.warn(
+          '[externalRatings] update refresh skipped:',
+          e?.message || e
+        );
+      }
     }
 
     const updatedMovie = await movie.save();
@@ -649,6 +702,7 @@ const createMovie = asyncHandler(async (req, res) => {
       episodes,
       casts,
       director,
+      imdbId, // ✅ PATCH
       downloadUrl,
       seoTitle,
       seoDescription,
@@ -740,6 +794,7 @@ const createMovie = asyncHandler(async (req, res) => {
       userId: req.user._id,
       casts: casts || [],
       director: String(director || '').trim(),
+      imdbId: String(imdbId || '').trim(),
       seoTitle: seoTitle || name,
       seoDescription: seoDescription || desc.substring(0, 300),
       seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
@@ -761,21 +816,19 @@ const createMovie = asyncHandler(async (req, res) => {
         throw new Error('Second server (videoUrl2) is required');
       }
       if (!videoUrl3) {
-        // ✅ NEW (Q1)
         res.status(400);
         throw new Error('Third server (videoUrl3) is required');
       }
 
       movieData.video = video;
       movieData.videoUrl2 = videoUrl2;
-      movieData.videoUrl3 = videoUrl3; // ✅ NEW (Q1)
+      movieData.videoUrl3 = videoUrl3;
       if (downloadUrl) movieData.downloadUrl = downloadUrl;
     } else if (type === 'WebSeries') {
       if (!episodes || episodes.length === 0) {
         res.status(400);
         throw new Error('Episodes are required for web series');
       }
-      // ✅ NEW (Q1)
       movieData.episodes = normalizeWebSeriesEpisodes(episodes);
     } else {
       res.status(400);
@@ -1057,6 +1110,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'numberOfReviews',
     'casts',
     'director',
+    'imdbId', // ✅ PATCH
     'seoTitle',
     'seoDescription',
     'seoKeywords',
@@ -1126,6 +1180,19 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
 
       const updateDoc = { $set: updateSet };
       if (Object.keys(updateUnset).length) updateDoc.$unset = updateUnset;
+
+      // ✅ PATCH: If identity fields touched, force external ratings refresh later
+      const touchesRatingsKey = ['type', 'name', 'year', 'imdbId'].some(
+        (f) => f in item
+      );
+      if (touchesRatingsKey) {
+        updateDoc.$set.externalRatingsUpdatedAt = null;
+        updateDoc.$set['externalRatings.imdb.rating'] = null;
+        updateDoc.$set['externalRatings.imdb.votes'] = null;
+        updateDoc.$set['externalRatings.imdb.url'] = '';
+        updateDoc.$set['externalRatings.rottenTomatoes.rating'] = null;
+        updateDoc.$set['externalRatings.rottenTomatoes.url'] = '';
+      }
 
       operations.push({
         updateMany: {
@@ -1261,6 +1328,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         episodes,
         casts,
         director,
+        imdbId,
         downloadUrl,
         seoTitle,
         seoDescription,
@@ -1314,6 +1382,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         userId: req.user._id,
         casts: casts || [],
         director: String(director || '').trim(),
+        imdbId: String(imdbId || '').trim(),
         seoTitle: seoTitle || name,
         seoDescription: seoDescription || desc.substring(0, 155),
         seoKeywords:
@@ -1331,17 +1400,16 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         if (!videoUrl2)
           throw new Error('Second server (videoUrl2) is required');
         if (!videoUrl3)
-          throw new Error('Third server (videoUrl3) is required'); // ✅ NEW (Q1)
+          throw new Error('Third server (videoUrl3) is required');
 
         movieData.video = video;
         movieData.videoUrl2 = videoUrl2;
-        movieData.videoUrl3 = videoUrl3; // ✅ NEW (Q1)
+        movieData.videoUrl3 = videoUrl3;
         if (downloadUrl) movieData.downloadUrl = downloadUrl;
       } else if (type === 'WebSeries') {
         if (!episodes || episodes.length === 0)
           throw new Error('Episodes are required for web series');
 
-        // ✅ NEW (Q1)
         movieData.episodes = normalizeWebSeriesEpisodes(episodes);
       } else {
         throw new Error('Invalid type');

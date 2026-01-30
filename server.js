@@ -20,10 +20,12 @@ import {
   generateSitemap,
   generateVideoSitemap,
   generateSitemapIndex,
+  generateActorsSitemap,
 } from './Controllers/SitemapController.js';
 import notificationsRouter from './routes/NotificationsRouter.js';
 import watchRequestsRouter from './routes/WatchRequestsRouter.js';
 import pushRouter from './routes/PushRouter.js';
+import actorsRouter from './routes/ActorsRouter.js';
 
 dotenv.config();
 
@@ -173,6 +175,7 @@ Sitemap: https://www.moviefrost.com/sitemap-videos.xml
 app.get('/sitemap.xml', generateSitemap);
 app.get('/sitemap-videos.xml', generateVideoSitemap);
 app.get('/sitemap-index.xml', generateSitemapIndex);
+app.get('/sitemap-actors.xml', generateActorsSitemap);
 
 // Cache headers for static-like assets if ever served from backend
 app.use((req, res, next) => {
@@ -198,6 +201,7 @@ app.use('/api/upload', Uploadrouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/requests', watchRequestsRouter);
 app.use('/api/push', pushRouter);
+app.use('/api/actors', actorsRouter);
 
 // Health
 app.get('/health', (_req, res) => {

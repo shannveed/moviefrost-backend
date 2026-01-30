@@ -342,7 +342,61 @@ export const generateSitemapIndex = asyncHandler(async (_req, res) => {
     <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap-videos.xml`)}</loc>
     <lastmod>${escapeXml(now)}</lastmod>
   </sitemap>
+  <sitemap>
+  <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap-actors.xml`)}</loc>
+   <lastmod>${escapeXml(now)}</lastmod>
+  </sitemap>
 </sitemapindex>`;
+
+  setSitemapHeaders(res);
+  res.send(xml);
+});
+
+
+// GET /sitemap-actors.xml
+export const generateActorsSitemap = asyncHandler(async (_req, res) => {
+  const movies = await Movie.find(publicVisibilityFilter)
+    .select('casts director directorSlug updatedAt')
+    .lean();
+
+  const seen = new Map(); // slug -> lastmod ISO
+
+  for (const m of movies) {
+    const lastmod = m.updatedAt ? new Date(m.updatedAt).toISOString() : null;
+
+    // director
+    if (m.directorSlug) {
+      if (!seen.has(m.directorSlug)) seen.set(m.directorSlug, lastmod);
+    }
+
+    // casts
+    if (Array.isArray(m.casts)) {
+      for (const c of m.casts) {
+        const s = c?.slug || '';
+        if (!s) continue;
+        if (!seen.has(s)) seen.set(s, lastmod);
+      }
+    }
+  }
+
+  // safety cap
+  const slugs = Array.from(seen.keys()).slice(0, 45000);
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${slugs
+  .map((s) => {
+    const loc = `${FRONTEND_BASE_URL}/actor/${s}`;
+    const lm = seen.get(s);
+    return `  <url>
+    <loc>${escapeXml(loc)}</loc>
+    ${lm ? `<lastmod>${escapeXml(lm)}</lastmod>` : ''}
+    <changefreq>weekly</changefreq>
+    <priority>0.6</priority>
+  </url>`;
+  })
+  .join('\n')}
+</urlset>`;
 
   setSitemapHeaders(res);
   res.send(xml);

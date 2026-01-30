@@ -1,5 +1,6 @@
 // backend/Models/MoviesModel.js
 import mongoose from 'mongoose';
+import { slugify } from '../utils/slugify.js';
 
 const reviewSchema = mongoose.Schema(
   {
@@ -19,18 +20,15 @@ const reviewSchema = mongoose.Schema(
 
 const episodeSchema = mongoose.Schema(
   {
-    // ✅ NEW: season support (old docs behave like seasonNumber=1 on frontend)
     seasonNumber: { type: Number, default: 1, min: 1 },
-
     episodeNumber: { type: Number, required: true },
     title: { type: String, required: false, default: '' },
     desc: { type: String },
     duration: { type: Number },
 
-    // ✅ 3 servers per episode
-    video: { type: String, required: true }, // server 1 (legacy field)
-    videoUrl2: { type: String, default: '' }, // server 2
-    videoUrl3: { type: String, default: '' }, // server 3
+    video: { type: String, required: true },
+    videoUrl2: { type: String, default: '' },
+    videoUrl3: { type: String, default: '' },
   },
   { timestamps: true }
 );
@@ -56,18 +54,12 @@ const moviesSchema = mongoose.Schema(
       trim: true,
     },
 
-    desc: {
-      type: String,
-      required: true,
-      maxlength: 5000, // ✅ increased from default
-    },
+    desc: { type: String, required: true, maxlength: 5000 },
 
     titleImage: { type: String, required: true },
-
     image: { type: String, required: true },
 
     category: { type: String, required: true },
-
     browseBy: { type: String, required: true },
 
     thumbnailInfo: { type: String, required: false, trim: true },
@@ -75,28 +67,26 @@ const moviesSchema = mongoose.Schema(
     language: { type: String, required: true },
 
     year: { type: Number, required: true },
-
     time: { type: Number, required: true },
 
+    // Movie servers
     video: {
       type: String,
       required: function () {
         return this.type === 'Movie';
       },
     },
-
     videoUrl2: {
       type: String,
       required: function () {
         return this.type === 'Movie';
       },
     },
-
-    // ✅ NEW: 3rd server for Movie (optional at schema-level for old docs)
     videoUrl3: { type: String, default: '' },
 
     downloadUrl: { type: String, required: false },
 
+    // WebSeries episodes
     episodes: {
       type: [episodeSchema],
       required: function () {
@@ -105,38 +95,42 @@ const moviesSchema = mongoose.Schema(
     },
 
     rate: { type: Number, required: true, default: 0 },
-
     numberOfReviews: { type: Number, required: true, default: 0 },
-
     reviews: [reviewSchema],
 
+    // Casts (✅ add slug for actor pages)
     casts: [
       {
-        name: { type: String, required: true },
-        image: { type: String, required: true },
+        name: { type: String, required: true, trim: true },
+        image: { type: String, required: true, trim: true },
+        slug: { type: String, trim: true, index: true, default: '' },
       },
     ],
-    // ✅ Director (Phase 1.5)
-director: { type: String, trim: true, default: '' },
 
+    // Director + slug
+    director: { type: String, trim: true, default: '' },
+    directorSlug: { type: String, trim: true, default: '', index: true },
 
-      // SEO Fields
-    seoTitle: {
-      type: String,
-      maxlength: 100, // ✅ increased
-      trim: true,
+    // ✅ External IDs / ratings (IMDb + RT)
+    imdbId: { type: String, trim: true, default: '', index: true },
+
+    externalRatings: {
+      imdb: {
+        rating: { type: Number, default: null }, // 0..10
+        votes: { type: Number, default: null },
+        url: { type: String, default: '' },
+      },
+      rottenTomatoes: {
+        rating: { type: Number, default: null }, // 0..100
+        url: { type: String, default: '' },
+      },
     },
+    externalRatingsUpdatedAt: { type: Date, default: null, index: true },
 
-    seoDescription: {
-      type: String,
-      maxlength: 300, // ✅ increased
-      trim: true,
-    },
-
-    seoKeywords: {
-      type: String,
-      trim: true,
-    },
+    // SEO
+    seoTitle: { type: String, maxlength: 100, trim: true },
+    seoDescription: { type: String, maxlength: 300, trim: true },
+    seoKeywords: { type: String, trim: true },
 
     viewCount: { type: Number, default: 0 },
 
@@ -144,36 +138,39 @@ director: { type: String, trim: true, default: '' },
     latest: { type: Boolean, default: false },
     previousHit: { type: Boolean, default: false },
 
-    /**
-     * ✅ HomeScreen "Latest New" tab support
-     */
     latestNew: { type: Boolean, default: false, index: true },
     latestNewAt: { type: Date, default: null, index: true },
 
-    /**
-     * ✅ HomeScreen Banner.js slider support
-     */
     banner: { type: Boolean, default: false, index: true },
     bannerAt: { type: Date, default: null, index: true },
 
-    // visibility flag (draft vs published)
-    isPublished: {
-      type: Boolean,
-      default: true,
-      index: true,
-    },
+    isPublished: { type: Boolean, default: true, index: true },
 
-    // manual ordering index for admin
-    orderIndex: {
-      type: Number,
-      default: null,
-      index: true,
-    },
+    orderIndex: { type: Number, default: null, index: true },
   },
   { timestamps: true }
 );
 
-// Text index for search
+// ✅ Keep cast/director slugs synced
+moviesSchema.pre('validate', function (next) {
+  try {
+    if (Array.isArray(this.casts)) {
+      for (const c of this.casts) {
+        if (!c) continue;
+        const n = String(c.name || '').trim();
+        c.slug = n ? slugify(n) : '';
+      }
+    }
+
+    const d = String(this.director || '').trim();
+    this.directorSlug = d ? slugify(d) : '';
+  } catch {
+    // ignore
+  }
+  next();
+});
+
+// Text index
 moviesSchema.index({
   name: 'text',
   desc: 'text',
@@ -182,14 +179,15 @@ moviesSchema.index({
   seoKeywords: 'text',
 });
 
-// Compound indexes for performance
+// Existing indexes
 moviesSchema.index({ category: 1, createdAt: -1 });
 moviesSchema.index({ browseBy: 1, createdAt: -1 });
 moviesSchema.index({ rate: -1 });
 moviesSchema.index({ viewCount: -1 });
 moviesSchema.index({ latest: -1, previousHit: 1, createdAt: -1 });
 
-// ✅ Optional performance index (season browsing/filtering)
+// ✅ New helpful indexes
+moviesSchema.index({ 'casts.slug': 1 });
 moviesSchema.index({ 'episodes.seasonNumber': 1 });
 
 export default mongoose.model('Movie', moviesSchema);
