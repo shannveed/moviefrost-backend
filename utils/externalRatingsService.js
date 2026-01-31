@@ -54,7 +54,7 @@ const extractImdbIdFromUrl = (url) => {
 /**
  * Refresh rules:
  * - If imdbId exists and stored imdb URL has different imdbId -> refresh now
- * - If imdbId exists but stored imdb URL is empty (never tried with imdbId) -> refresh now
+ * - If imdbId exists but stored imdb URL is empty -> refresh now
  * - Else follow TTL
  */
 const shouldRefresh = (movieDoc, ttlDays = TTL_DAYS) => {
@@ -110,6 +110,86 @@ const buildOmdbUrl = ({ imdbId, title, year, type, includeYear = true }) => {
   return `${OMDB_BASE}?${p.toString()}`;
 };
 
+// ✅ NEW: OMDb "search" fallback (s=) when exact title fails
+const buildOmdbSearchUrl = ({ title, year, type, includeYear = true, page = 1 }) => {
+  const p = new URLSearchParams();
+  p.set('apikey', OMDB_API_KEY);
+
+  const cleanTitle = normalizeTitleForOmdb(title, year);
+  p.set('s', cleanTitle);
+
+  if (includeYear && year) p.set('y', String(year));
+  if (type) p.set('type', type);
+
+  p.set('page', String(page));
+  return `${OMDB_BASE}?${p.toString()}`;
+};
+
+const yearMatches = (candidateYear, targetYear) => {
+  const cy = String(candidateYear || '').trim();
+  const ty = String(targetYear || '').trim();
+  if (!cy || !ty) return false;
+
+  // movie: "2019"
+  if (cy === ty) return true;
+
+  // series: "2011–2019" or "2011-2019"
+  if (cy.startsWith(`${ty}–`)) return true;
+  if (cy.startsWith(`${ty}-`)) return true;
+
+  return false;
+};
+
+const pickBestSearchResult = (results = [], year, type) => {
+  const list = Array.isArray(results) ? results.filter(Boolean) : [];
+  const y = year ? String(year).trim() : '';
+  const t = type ? String(type).toLowerCase() : '';
+
+  let filtered = list.filter((r) => r?.imdbID);
+
+  if (t) {
+    const typeFiltered = filtered.filter(
+      (r) => String(r?.Type || '').toLowerCase() === t
+    );
+    if (typeFiltered.length) filtered = typeFiltered;
+  }
+
+  if (y) {
+    const exact = filtered.find((r) => yearMatches(r?.Year, y));
+    if (exact) return exact;
+  }
+
+  return filtered[0] || null;
+};
+
+const tryFetchJson = async (url) => {
+  try {
+    const res = await fetchWithTimeout(url);
+
+    const json = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      return { ok: false, json: null, error: `HTTP ${res.status}` };
+    }
+
+    if (json && json.Response !== 'False') {
+      return { ok: true, json, error: '' };
+    }
+
+    return {
+      ok: false,
+      json: null,
+      error: json?.Error ? String(json.Error) : 'OMDb not found',
+    };
+  } catch (e) {
+    const msg =
+      e?.name === 'AbortError'
+        ? 'timeout'
+        : String(e?.message || e || 'fetch_error');
+    return { ok: false, json: null, error: msg };
+  }
+};
+
 /**
  * Updates movieDoc.externalRatings (IMDb + RottenTomatoes) if stale/missing.
  * Never throws fatally (call inside try/catch anyway).
@@ -128,6 +208,7 @@ export const ensureMovieExternalRatings = async (movieDoc) => {
 
   if (!title && !imdbId) return { updated: false, reason: 'no_title_or_imdb' };
 
+  // 1) Try direct lookups first (best accuracy)
   const urls = [
     buildOmdbUrl({
       imdbId: imdbId || null,
@@ -154,20 +235,47 @@ export const ensureMovieExternalRatings = async (movieDoc) => {
   let lastError = '';
 
   for (const url of urls) {
-    const res = await fetchWithTimeout(url);
-    if (!res.ok) {
-      lastError = `HTTP ${res.status}`;
-      continue;
-    }
-
-    const json = await res.json().catch(() => null);
-
-    if (json && json.Response !== 'False') {
-      data = json;
+    const r = await tryFetchJson(url);
+    if (r.ok) {
+      data = r.json;
       break;
     }
+    lastError = r.error || lastError;
+  }
 
-    if (json?.Error) lastError = String(json.Error);
+  // 2) ✅ NEW: fallback search if title lookup failed (only when imdbId is not set)
+  if (!data && !imdbId && title) {
+    const searchUrls = [
+      buildOmdbSearchUrl({ title, year, type: omdbType, includeYear: true, page: 1 }),
+      buildOmdbSearchUrl({ title, year, type: omdbType, includeYear: false, page: 1 }),
+    ];
+
+    for (const sUrl of searchUrls) {
+      const sRes = await tryFetchJson(sUrl);
+      if (!sRes.ok || !sRes.json) {
+        lastError = sRes.error || lastError;
+        continue;
+      }
+
+      const results = Array.isArray(sRes.json.Search) ? sRes.json.Search : [];
+      const best = pickBestSearchResult(results, year, omdbType);
+      if (!best?.imdbID) continue;
+
+      const detailUrl = buildOmdbUrl({
+        imdbId: best.imdbID,
+        title,
+        year,
+        type: undefined,
+        includeYear: false,
+      });
+
+      const dRes = await tryFetchJson(detailUrl);
+      if (dRes.ok) {
+        data = dRes.json;
+        break;
+      }
+      lastError = dRes.error || lastError;
+    }
   }
 
   if (!data) {
