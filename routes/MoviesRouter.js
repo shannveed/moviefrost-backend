@@ -17,6 +17,7 @@ import {
   getBannerMoviesAdmin,
   setBannerMovies,
 } from '../Controllers/BannerController.js';
+import { findMoviesByNamesAdmin } from '../Controllers/AdminMoviesLookupController.js';
 
 // ✅ reorder Latest New
 import { reorderLatestNewMovies } from '../Controllers/LatestNewReorderController.js';
@@ -64,6 +65,8 @@ router.get('/admin/banner', protect, admin, getBannerMoviesAdmin);
 
 // ADMIN RELATED (must be before "/admin/:id")
 router.get('/admin/related/:id', protect, admin, getRelatedMoviesAdmin);
+// ✅ ADMIN: bulk lookup by exact names
+router.post('/admin/find-by-names', protect, admin, findMoviesByNamesAdmin);
 
 router.get('/admin/:id', protect, admin, moviesController.getMovieByIdAdmin);
 
