@@ -32,6 +32,29 @@ const buildStartsWithRegex = (value) => {
   return new RegExp(`^${escapeRegex(term)}`, 'i');
 };
 
+// ✅ NEW: allow filtering by type via query (?type=Movie|WebSeries)
+// Backwards compatible: invalid/empty type is ignored.
+const normalizeTypeParam = (value) => {
+  const v = String(value || '').trim();
+  if (!v) return null;
+
+  const lower = v.toLowerCase();
+  if (lower === 'movie' || lower === 'movies') return 'Movie';
+
+  if (
+    lower === 'webseries' ||
+    lower === 'web-series' ||
+    lower === 'web series' ||
+    lower === 'tvshows' ||
+    lower === 'tv-shows' ||
+    lower === 'tv shows'
+  ) {
+    return 'WebSeries';
+  }
+
+  return null;
+};
+
 // Turn the "name" into a slug, based ONLY on the name.
 const slugifyNameAndYear = (name, year) => {
   if (!name) return '';
@@ -211,13 +234,15 @@ const importMovies = asyncHandler(async (req, res) => {
 // PUBLIC: get all movies (only published)
 const getMovies = asyncHandler(async (req, res) => {
   try {
-    const { category, time, language, rate, year, search, browseBy } = req.query;
+    const { category, time, language, rate, year, search, browseBy, type } = req.query;
+    const typeFilter = normalizeTypeParam(type);
 
     // ✅ starts-with search only
     const searchRegex = buildStartsWithRegex(search);
 
     let baseFilter = {
       ...publicVisibilityFilter,
+      ...(typeFilter && { type: typeFilter }),
       ...(category && { category }),
       ...(time && { time }),
       ...(language && { language }),
@@ -287,11 +312,14 @@ const getMovies = asyncHandler(async (req, res) => {
 // ADMIN: get all movies (includes drafts/unpublished)
 const getMoviesAdmin = asyncHandler(async (req, res) => {
   try {
-    const { category, time, language, rate, year, search, browseBy } = req.query;
+    const { category, time, language, rate, year, search, browseBy, type } = req.query;
+
+    const typeFilter = normalizeTypeParam(type);
 
     const searchRegex = buildStartsWithRegex(search);
 
     let baseFilter = {
+      ...(typeFilter && { type: typeFilter }),
       ...(category && { category }),
       ...(time && { time }),
       ...(language && { language }),
