@@ -1480,60 +1480,175 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
 /* ================================================================== */
 
 const reorderMoviesInPage = asyncHandler(async (req, res) => {
-  const { pageNumber, orderedIds } = req.body;
+  const { pageNumber, orderedIds, query } = req.body || {};
 
-  const page = Number(pageNumber) || 1;
+  const page = Math.max(1, Number(pageNumber) || 1);
 
   if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
     res.status(400);
     throw new Error('orderedIds array is required');
   }
 
+  // Normalize + prevent duplicates
+  const ordered = orderedIds
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+
+  if (!ordered.length) {
+    res.status(400);
+    throw new Error('orderedIds array is required');
+  }
+
+  const orderedSet = new Set(ordered);
+  if (orderedSet.size !== ordered.length) {
+    res.status(400);
+    throw new Error('orderedIds must not contain duplicates');
+  }
+
+  // Ensure every movie has an orderIndex (best-effort, runs only if missing)
   await ensureOrderIndexes();
 
-  const allMovies = await Movie.find({})
-    .sort({ latest: -1, previousHit: 1, orderIndex: 1 })
-    .select('_id')
-    .lean();
+  // Build the SAME base filter used by GET /api/movies/admin
+  const q = query && typeof query === 'object' ? query : {};
 
-  const total = allMovies.length;
-  const start = (page - 1) * REORDER_PAGE_LIMIT;
-  const end = Math.min(start + REORDER_PAGE_LIMIT, total);
+  const typeFilter = normalizeTypeParam(q.type);
+  const searchRegex = buildStartsWithRegex(q.search);
 
-  if (start >= total) {
+  const browseByRaw = Array.isArray(q.browseBy)
+    ? q.browseBy.join(',')
+    : q.browseBy;
+
+  const browseByList =
+    browseByRaw && String(browseByRaw).trim()
+      ? String(browseByRaw)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+  const baseFilter = {
+    ...(typeFilter && { type: typeFilter }),
+    ...(q.category && { category: q.category }),
+    ...(q.time && { time: q.time }),
+    ...(q.language && { language: q.language }),
+    ...(q.rate && { rate: q.rate }),
+    ...(q.year && { year: q.year }),
+    ...(browseByList.length && { browseBy: { $in: browseByList } }),
+    ...(searchRegex && { name: searchRegex }),
+  };
+
+  const limit = REORDER_PAGE_LIMIT;
+  const skip = (page - 1) * limit;
+
+  const normalFilter = { ...baseFilter, previousHit: { $ne: true } };
+  const prevHitFilter = { ...baseFilter, previousHit: true };
+
+  const sortLatest = { latest: -1, orderIndex: 1, createdAt: -1 };
+  const sortPrevHits = { orderIndex: 1, createdAt: -1 };
+
+  const [normalCount, prevHitCount] = await Promise.all([
+    Movie.countDocuments(normalFilter),
+    Movie.countDocuments(prevHitFilter),
+  ]);
+
+  const totalCount = normalCount + prevHitCount;
+
+  if (skip >= totalCount) {
     res.status(400);
     throw new Error('Page number out of range');
   }
 
-  const pageSlice = allMovies.slice(start, end);
-  const pageIdsSet = new Set(pageSlice.map((m) => String(m._id)));
+  // Fetch the EXACT docs shown on that page (same pagination logic as getMoviesAdmin)
+  let pageDocs = [];
 
-  if (
-    orderedIds.length !== pageSlice.length ||
-    !orderedIds.every((id) => pageIdsSet.has(String(id)))
-  ) {
+  if (skip < normalCount) {
+    const remainingNormal = normalCount - skip;
+    const takeFromNormal = Math.min(limit, remainingNormal);
+    const takeFromPrevHits = limit - takeFromNormal;
+
+    const normalDocs = await Movie.find(normalFilter)
+      .sort(sortLatest)
+      .skip(skip)
+      .limit(takeFromNormal)
+      .select('_id orderIndex')
+      .lean();
+
+    if (takeFromPrevHits > 0) {
+      const prevDocs = await Movie.find(prevHitFilter)
+        .sort(sortPrevHits)
+        .limit(takeFromPrevHits)
+        .select('_id orderIndex')
+        .lean();
+
+      pageDocs = [...normalDocs, ...prevDocs];
+    } else {
+      pageDocs = normalDocs;
+    }
+  } else {
+    const adjustedSkip = skip - normalCount;
+
+    pageDocs = await Movie.find(prevHitFilter)
+      .sort(sortPrevHits)
+      .skip(adjustedSkip)
+      .limit(limit)
+      .select('_id orderIndex')
+      .lean();
+  }
+
+  if (!pageDocs.length) {
+    res.status(400);
+    throw new Error('Page number out of range');
+  }
+
+  const pageIds = pageDocs.map((d) => String(d._id));
+  const pageSet = new Set(pageIds);
+
+  // Strict validation: orderedIds must equal the page ids (same size, no extras, no missing)
+  if (ordered.length !== pageIds.length) {
     res.status(400);
     throw new Error('orderedIds must contain exactly the IDs of this page');
   }
 
-  const idToMovie = new Map(allMovies.map((m) => [String(m._id), m]));
-
-  const newPageSlice = orderedIds.map((id) => idToMovie.get(String(id)));
-
-  for (let i = 0; i < newPageSlice.length; i++) {
-    allMovies[start + i] = newPageSlice[i];
+  for (const id of ordered) {
+    if (!pageSet.has(id)) {
+      res.status(400);
+      throw new Error('orderedIds must contain exactly the IDs of this page');
+    }
   }
 
-  const bulkOps = allMovies.map((m, idx) => ({
+  for (const id of pageIds) {
+    if (!orderedSet.has(id)) {
+      res.status(400);
+      throw new Error('orderedIds must contain exactly the IDs of this page');
+    }
+  }
+
+  // Page "slot" orderIndex values (ascending)
+  const slotOrderIndexes = pageDocs
+    .map((d) => Number(d.orderIndex))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+
+  if (slotOrderIndexes.length !== pageDocs.length) {
+    res.status(500);
+    throw new Error('Some movies are missing orderIndex. Try again.');
+  }
+
+  // Swap orderIndex only for these page items
+  const bulkOps = ordered.map((id, idx) => ({
     updateOne: {
-      filter: { _id: m._id },
-      update: { $set: { orderIndex: idx + 1 } },
+      filter: { _id: id },
+      update: { $set: { orderIndex: slotOrderIndexes[idx] } },
     },
   }));
 
   await Movie.bulkWrite(bulkOps, { ordered: true });
 
-  res.status(200).json({ message: 'Page order updated successfully' });
+  res.status(200).json({
+    message: 'Page order updated successfully',
+    page,
+    reorderedCount: bulkOps.length,
+  });
 });
 
 /* ================================================================== */
