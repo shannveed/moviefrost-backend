@@ -4,7 +4,7 @@ import Movie from '../Models/MoviesModel.js';
 import Categories from '../Models/CategoriesModel.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
-import { ensureMovieExternalRatings } from '../utils/externalRatingsService.js';
+import { notifyIndexNow, buildMoviePublicUrls } from '../utils/indexNowService.js';
 
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
@@ -675,6 +675,14 @@ const updateMovie = asyncHandler(async (req, res) => {
     }
 
     const updatedMovie = await movie.save();
+    // ✅ IndexNow (Bing/Yandex): notify URL changes (best effort)
+    try {
+      if (updatedMovie?.isPublished !== false) {
+        await notifyIndexNow(buildMoviePublicUrls(updatedMovie));
+      }
+    } catch (e) {
+      console.warn('[indexnow] updateMovie:', e?.message || e);
+    }
     res.status(201).json(updatedMovie);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -686,6 +694,12 @@ const deleteMovie = asyncHandler(async (req, res) => {
   try {
     const movie = await Movie.findById(req.params.id);
     if (movie) {
+      // notify search engines that URL changed (will become 404)
+      try {
+        await notifyIndexNow(buildMoviePublicUrls(movie));
+      } catch (e) {
+        console.warn('[indexnow] deleteMovie:', e?.message || e);
+      }
       await movie.deleteOne();
       res.json({ message: 'Movie removed' });
     } else {
@@ -865,6 +879,14 @@ const createMovie = asyncHandler(async (req, res) => {
 
     const movie = new Movie(movieData);
     const createdMovie = await movie.save();
+    // ✅ IndexNow (Bing/Yandex): notify URL changes (best effort)
+    try {
+      if (createdMovie?.isPublished !== false) {
+        await notifyIndexNow(buildMoviePublicUrls(createdMovie));
+      }
+    } catch (e) {
+      console.warn('[indexnow] createMovie:', e?.message || e);
+    }
     res.status(201).json(createdMovie);
   } catch (error) {
     res
