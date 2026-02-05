@@ -234,8 +234,9 @@ export const generateVideoSitemap = asyncHandler(async (_req, res) => {
     .map((m) => {
       const pathSegment = m.slug || m._id;
 
-      // ✅ Landing page (contains your player UI)
-      const pageUrl = `${FRONTEND_BASE_URL}/watch/${pathSegment}`;
+      // ✅ IMPORTANT CHANGE:
+      // Landing page for indexing is now the Movie page, NOT /watch
+      const pageUrl = `${FRONTEND_BASE_URL}/movie/${pathSegment}`;
 
       // ✅ Actual player URL (the same URL you use in iframe src)
       const playerUrl = pickPlayerUrl(m, pageUrl);
@@ -332,6 +333,8 @@ ${xmlRows}
 export const generateSitemapIndex = asyncHandler(async (_req, res) => {
   const now = new Date().toISOString();
 
+  // ✅ IMPORTANT CHANGE:
+  // Remove sitemap-actors.xml from index because /actor/* should be noindex
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <sitemap>
@@ -342,16 +345,11 @@ export const generateSitemapIndex = asyncHandler(async (_req, res) => {
     <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap-videos.xml`)}</loc>
     <lastmod>${escapeXml(now)}</lastmod>
   </sitemap>
-  <sitemap>
-  <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap-actors.xml`)}</loc>
-   <lastmod>${escapeXml(now)}</lastmod>
-  </sitemap>
 </sitemapindex>`;
 
   setSitemapHeaders(res);
   res.send(xml);
 });
-
 
 // GET /sitemap-actors.xml
 export const generateActorsSitemap = asyncHandler(async (_req, res) => {
