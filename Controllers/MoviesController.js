@@ -5,6 +5,9 @@ import Categories from '../Models/CategoriesModel.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import { notifyIndexNow, buildMoviePublicUrls } from '../utils/indexNowService.js';
+import { ensureMovieTmdbCredits, fetchTmdbCreditsForMovie } from '../utils/tmdbService.js';
+import { ensureMovieExternalRatings } from '../utils/externalRatingsService.js';
+
 
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
@@ -410,7 +413,12 @@ const getMovieById = asyncHandler(async (req, res) => {
   } catch (e) {
     console.warn('[externalRatings] skipped:', e?.message || e);
   }
-
+// ✅ TMDb casts/director — best effort, cached
+  try {
+    await ensureMovieTmdbCredits(movie);
+  } catch (e) {
+    console.warn('[tmdb] credits skipped:', e?.message || e);
+  }
   movie.viewCount = (movie.viewCount || 0) + 1;
   await movie.save();
 
@@ -441,6 +449,12 @@ const getMovieByIdAdmin = asyncHandler(async (req, res) => {
   } catch (e) {
     console.warn('[externalRatings] skipped:', e?.message || e);
   }
+// ✅ TMDb casts/director — best effort, cached
+try {
+  await ensureMovieTmdbCredits(movie);
+} catch (e) {
+  console.warn('[tmdb] credits skipped:', e?.message || e);
+}
 
   movie.viewCount = (movie.viewCount || 0) + 1;
   await movie.save();
@@ -574,7 +588,8 @@ const updateMovie = asyncHandler(async (req, res) => {
       throw new Error('Movie cannot be both Latest and PreviousHit');
     }
 
-    const originalName = movie.name;
+    const originalType = movie.type;
+   const originalName = movie.name;
     const originalYear = movie.year;
     const originalImdbId = String(movie.imdbId || '').trim();
 
@@ -593,7 +608,6 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.time = time || movie.time;
     movie.language = language || movie.language;
     movie.year = year || movie.year;
-    movie.casts = casts || movie.casts;
 
     if (director !== undefined) {
       movie.director = String(director || '').trim();
@@ -602,10 +616,17 @@ const updateMovie = asyncHandler(async (req, res) => {
       movie.imdbId = String(imdbId || '').trim();
     }
 
-    const identityChanged =
-      movie.name !== originalName ||
-      movie.year !== originalYear ||
-      String(movie.imdbId || '').trim() !== originalImdbId;
+     const identityChanged =
+   movie.type !== originalType ||
+   movie.name !== originalName ||
+   movie.year !== originalYear ||
+   String(movie.imdbId || '').trim() !== originalImdbId;
+
+ if (identityChanged) {
+   movie.tmdbCreditsUpdatedAt = null;
+   movie.tmdbId = null;
+   movie.tmdbType = '';
+ }
 
     if (identityChanged) {
       // Force refresh of external ratings when name/year/imdbId changes
@@ -673,6 +694,15 @@ const updateMovie = asyncHandler(async (req, res) => {
         );
       }
     }
+// ✅ Best effort: refresh TMDb casts/director (overwrite old manual casts)
+try {
+  await ensureMovieTmdbCredits(movie, { 
+    force: identityChanged, 
+    castLimit: 20 
+  });
+} catch (e) {
+  console.warn('[tmdb] update sync skipped:', e?.message || e);
+}
 
     const updatedMovie = await movie.save();
     // ✅ IndexNow (Bing/Yandex): notify URL changes (best effort)
@@ -834,7 +864,7 @@ const createMovie = asyncHandler(async (req, res) => {
       language,
       year: numericYear || year,
       userId: req.user._id,
-      casts: casts || [],
+      casts: [],
       director: String(director || '').trim(),
       imdbId: String(imdbId || '').trim(),
       seoTitle: seoTitle || name,
@@ -876,6 +906,37 @@ const createMovie = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error('Invalid type');
     }
+
+    // ✅ Auto-sync casts/director from TMDb (overwrites any existing casts)
+    try {
+      const tmdb = await fetchTmdbCreditsForMovie({
+        type,
+        name,
+        year: numericYear || year,
+        imdbId: String(imdbId || '').trim(),
+        tmdbId: null,
+        castLimit: 20,
+      });
+
+      if (tmdb?.enabled) {
+        movieData.tmdbCreditsUpdatedAt = new Date();
+      }
+
+      if (tmdb?.found && tmdb?.tmdbId) {
+        movieData.tmdbId = tmdb.tmdbId;
+        movieData.tmdbType = tmdb.tmdbType;
+      }
+
+      movieData.casts =
+        Array.isArray(tmdb?.casts) && tmdb.casts.length ? tmdb.casts : [];
+
+      if (tmdb?.director) {
+        movieData.director = tmdb.director;
+      }
+    } catch (e) {
+      console.warn('[tmdb] createMovie sync failed:', e?.message || e);
+    }
+
 
     const movie = new Movie(movieData);
     const createdMovie = await movie.save();
@@ -1430,7 +1491,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         language,
         year: numericYear || year,
         userId: req.user._id,
-        casts: casts || [],
+        casts: [],
         director: String(director || '').trim(),
         imdbId: String(imdbId || '').trim(),
         seoTitle: seoTitle || name,

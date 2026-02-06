@@ -23,6 +23,7 @@ import {
   getMovieRatings,
   getMyMovieRating,
 } from '../Controllers/RatingsController.js';
+import { syncTmdbCreditsAdmin } from '../Controllers/TmdbController.js';
 
 const router = express.Router();
 
@@ -50,6 +51,9 @@ router.get('/related/:id', getRelatedMovies);
 
 // ADMIN READ ROUTES (include unpublished / drafts)
 router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
+
+// ✅ TMDb credits sync (casts/director overwrite)
+router.post('/admin/tmdb/sync-credits', protect, admin, syncTmdbCreditsAdmin);
 
 // Admin Latest New list
 router.get('/admin/latest-new', protect, admin, moviesController.getLatestNewMoviesAdmin);

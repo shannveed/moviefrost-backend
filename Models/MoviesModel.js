@@ -22,7 +22,7 @@ const episodeSchema = mongoose.Schema(
   {
     seasonNumber: { type: Number, default: 1, min: 1 },
     episodeNumber: { type: Number, required: true },
-    title: { type: String, required: false, default: '' },
+    title: { type: String, default: '' },
     desc: { type: String },
     duration: { type: Number },
 
@@ -62,7 +62,7 @@ const moviesSchema = mongoose.Schema(
     category: { type: String, required: true },
     browseBy: { type: String, required: true },
 
-    thumbnailInfo: { type: String, required: false, trim: true },
+    thumbnailInfo: { type: String, trim: true, default: '' },
 
     language: { type: String, required: true },
 
@@ -84,7 +84,7 @@ const moviesSchema = mongoose.Schema(
     },
     videoUrl3: { type: String, default: '' },
 
-    downloadUrl: { type: String, required: false },
+    downloadUrl: { type: String, default: '' },
 
     // WebSeries episodes
     episodes: {
@@ -98,7 +98,7 @@ const moviesSchema = mongoose.Schema(
     numberOfReviews: { type: Number, required: true, default: 0 },
     reviews: [reviewSchema],
 
-    // Casts (✅ add slug for actor pages)
+    // Casts (TMDb synced)
     casts: [
       {
         name: { type: String, required: true, trim: true },
@@ -107,34 +107,48 @@ const moviesSchema = mongoose.Schema(
       },
     ],
 
-    // Director + slug
     director: { type: String, trim: true, default: '' },
     directorSlug: { type: String, trim: true, default: '', index: true },
 
-    // ✅ External IDs / ratings (IMDb + RT)
+    // External IDs
     imdbId: { type: String, trim: true, default: '', index: true },
 
+    // TMDb
+    tmdbId: { type: Number, default: null, index: true },
+
+    // ✅ FIX: include '' to avoid crashing on existing docs / reset logic
+    tmdbType: {
+      type: String,
+      enum: ['', 'movie', 'tv'],
+      default: '',
+      trim: true,
+      index: true,
+    },
+
+    tmdbCreditsUpdatedAt: { type: Date, default: null, index: true },
+
+    // External ratings (OMDb)
     externalRatings: {
       imdb: {
-        rating: { type: Number, default: null }, // 0..10
+        rating: { type: Number, default: null },
         votes: { type: Number, default: null },
         url: { type: String, default: '' },
       },
       rottenTomatoes: {
-        rating: { type: Number, default: null }, // 0..100
+        rating: { type: Number, default: null },
         url: { type: String, default: '' },
       },
     },
     externalRatingsUpdatedAt: { type: Date, default: null, index: true },
 
     // SEO
-    seoTitle: { type: String, maxlength: 100, trim: true },
-    seoDescription: { type: String, maxlength: 300, trim: true },
-    seoKeywords: { type: String, trim: true },
+    seoTitle: { type: String, maxlength: 100, trim: true, default: '' },
+    seoDescription: { type: String, maxlength: 300, trim: true, default: '' },
+    seoKeywords: { type: String, trim: true, default: '' },
 
     viewCount: { type: Number, default: 0 },
 
-    // FLAGS
+    // Flags
     latest: { type: Boolean, default: false },
     previousHit: { type: Boolean, default: false },
 
@@ -151,9 +165,10 @@ const moviesSchema = mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ Keep cast/director slugs synced
+// ✅ Keep cast/director slugs synced + keep tmdbType safe
 moviesSchema.pre('validate', function (next) {
   try {
+    // casts slug
     if (Array.isArray(this.casts)) {
       for (const c of this.casts) {
         if (!c) continue;
@@ -162,11 +177,19 @@ moviesSchema.pre('validate', function (next) {
       }
     }
 
+    // director slug
     const d = String(this.director || '').trim();
     this.directorSlug = d ? slugify(d) : '';
+
+    // ✅ prevent enum validation crashes if DB contains junk
+    const t = String(this.tmdbType ?? '').trim();
+    if (!['', 'movie', 'tv'].includes(t)) {
+      this.tmdbType = '';
+    }
   } catch {
     // ignore
   }
+
   next();
 });
 
@@ -179,15 +202,14 @@ moviesSchema.index({
   seoKeywords: 'text',
 });
 
-// Existing indexes
+// Other indexes
 moviesSchema.index({ category: 1, createdAt: -1 });
 moviesSchema.index({ browseBy: 1, createdAt: -1 });
 moviesSchema.index({ rate: -1 });
 moviesSchema.index({ viewCount: -1 });
 moviesSchema.index({ latest: -1, previousHit: 1, createdAt: -1 });
 
-// ✅ New helpful indexes
-moviesSchema.index({ 'casts.slug': 1 });
+// ✅ Keep only ONE declaration for each index (no duplicates)
 moviesSchema.index({ 'episodes.seasonNumber': 1 });
 
 export default mongoose.model('Movie', moviesSchema);
