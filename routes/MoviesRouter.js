@@ -2,10 +2,7 @@
 import express from 'express';
 import * as moviesController from '../Controllers/MoviesController.js';
 import { protect, admin } from '../middlewares/Auth.js';
-import {
-  generateSitemap,
-  generateVideoSitemap,
-} from '../Controllers/SitemapController.js';
+import { generateSitemap } from '../Controllers/SitemapController.js';
 
 import {
   getRelatedMovies,
@@ -19,10 +16,8 @@ import {
 } from '../Controllers/BannerController.js';
 import { findMoviesByNamesAdmin } from '../Controllers/AdminMoviesLookupController.js';
 
-// ✅ reorder Latest New
 import { reorderLatestNewMovies } from '../Controllers/LatestNewReorderController.js';
 
-// ✅ NEW: ratings controller (WatchPage ratings)
 import {
   upsertMovieRating,
   getMovieRatings,
@@ -35,9 +30,8 @@ const router = express.Router();
 router.post('/import', moviesController.importMovies);
 router.get('/', moviesController.getMovies);
 
-// Sitemaps
+// Sitemaps (legacy API path; main sitemaps are served at backend root via server.js)
 router.get('/sitemap.xml', generateSitemap);
-router.get('/sitemap-videos.xml', generateVideoSitemap);
 
 router.get('/rated/top', moviesController.getTopRatedMovies);
 router.get('/random/all', moviesController.getRandomMovies);
@@ -65,13 +59,14 @@ router.get('/admin/banner', protect, admin, getBannerMoviesAdmin);
 
 // ADMIN RELATED (must be before "/admin/:id")
 router.get('/admin/related/:id', protect, admin, getRelatedMoviesAdmin);
-// ✅ ADMIN: bulk lookup by exact names
+
+// ADMIN: bulk lookup by exact names
 router.post('/admin/find-by-names', protect, admin, findMoviesByNamesAdmin);
 
 router.get('/admin/:id', protect, admin, moviesController.getMovieByIdAdmin);
 
 /* ============================================================
-   ✅ NEW: Ratings routes (WatchPage -> Rating collection)
+   Ratings routes (WatchPage -> Rating collection)
    ============================================================ */
 router.get('/:id/ratings', getMovieRatings);
 router.get('/:id/ratings/me', protect, getMyMovieRating);

@@ -18,7 +18,6 @@ import { errorHandler } from './middlewares/errorMiddleware.js';
 import Uploadrouter from './Controllers/UploadFile.js';
 import {
   generateSitemap,
-  generateVideoSitemap,
   generateSitemapIndex,
   generateActorsSitemap,
 } from './Controllers/SitemapController.js';
@@ -69,13 +68,7 @@ app.use(
           'https://pl27010453.profitableratecpm.com',
         ],
         styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-        imgSrc: [
-          "'self'",
-          'data:',
-          'https:',
-          'blob:',
-          'https://cdn.moviefrost.com',
-        ],
+        imgSrc: ["'self'", 'data:', 'https:', 'blob:', 'https://cdn.moviefrost.com'],
         connectSrc: [
           "'self'",
           'https://cdn.moviefrost.com',
@@ -100,12 +93,7 @@ app.use(
         fontSrc: ["'self'", 'https://fonts.gstatic.com'],
         objectSrc: ["'none'"],
         mediaSrc: ["'self'", 'https:', 'blob:', 'https://cdn.moviefrost.com'],
-        frameSrc: [
-          "'self'",
-          'https:',
-          'https://a.monetag.com',
-          'https://accounts.google.com',
-        ],
+        frameSrc: ["'self'", 'https:', 'https://a.monetag.com', 'https://accounts.google.com'],
       },
     },
     hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
@@ -120,9 +108,7 @@ app.use(
     level: 6,
     threshold: 1024,
     filter: (req, res) =>
-      req.headers['x-no-compression']
-        ? false
-        : compression.filter(req, res),
+      req.headers['x-no-compression'] ? false : compression.filter(req, res),
   })
 );
 
@@ -139,6 +125,7 @@ const corsOptions = {
       BACKEND_HOST,
     ];
     if (!origin) return callback(null, true);
+
     const ok = allowedOrigins.some((allowedOrigin) => {
       if (allowedOrigin.includes('*')) {
         const regex = new RegExp(allowedOrigin.replace('*.', '.*\\.'));
@@ -146,6 +133,7 @@ const corsOptions = {
       }
       return allowedOrigin === origin;
     });
+
     return ok ? callback(null, true) : callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
@@ -165,17 +153,25 @@ User-agent: *
 Allow: /
 Disallow: /api/
 
+Sitemap: https://www.moviefrost.com/sitemap-index.xml
 Sitemap: https://www.moviefrost.com/sitemap.xml
-Sitemap: https://www.moviefrost.com/sitemap-videos.xml
 `;
   res.type('text/plain').send(robotsContent);
 });
 
 // Sitemaps from backend
 app.get('/sitemap.xml', generateSitemap);
-app.get('/sitemap-videos.xml', generateVideoSitemap);
 app.get('/sitemap-index.xml', generateSitemapIndex);
 app.get('/sitemap-actors.xml', generateActorsSitemap);
+
+// ✅ Video sitemap removed: return 410 (fast + clear for Google)
+app.get('/sitemap-videos.xml', (_req, res) => {
+  res
+    .status(410)
+    .set('Content-Type', 'text/plain; charset=UTF-8')
+    .set('Cache-Control', 'public, max-age=86400, s-maxage=86400')
+    .send('sitemap-videos.xml has been removed.');
+});
 
 // Cache headers for static-like assets if ever served from backend
 app.use((req, res, next) => {
@@ -238,4 +234,3 @@ if (NODE_ENV !== 'production') {
 }
 
 export default app;
-  
