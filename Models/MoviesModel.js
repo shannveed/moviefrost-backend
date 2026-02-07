@@ -33,6 +33,15 @@ const episodeSchema = mongoose.Schema(
   { timestamps: true }
 );
 
+/* ✅ NEW: FAQ schema (max 5 enforced in controller) */
+const faqSchema = mongoose.Schema(
+  {
+    question: { type: String, required: true, trim: true, maxlength: 200 },
+    answer: { type: String, required: true, trim: true, maxlength: 800 },
+  },
+  { _id: false }
+);
+
 const moviesSchema = mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -68,6 +77,10 @@ const moviesSchema = mongoose.Schema(
 
     year: { type: Number, required: true },
     time: { type: Number, required: true },
+
+    /* ✅ NEW: trailer + FAQ (optional) */
+    trailerUrl: { type: String, trim: true, default: '' },
+    faqs: { type: [faqSchema], default: [] },
 
     // Movie servers
     video: {

@@ -14,15 +14,18 @@ import {
   getBannerMoviesAdmin,
   setBannerMovies,
 } from '../Controllers/BannerController.js';
-import { findMoviesByNamesAdmin } from '../Controllers/AdminMoviesLookupController.js';
 
+import { findMoviesByNamesAdmin } from '../Controllers/AdminMoviesLookupController.js';
 import { reorderLatestNewMovies } from '../Controllers/LatestNewReorderController.js';
 
 import {
   upsertMovieRating,
+  createGuestMovieRating,
   getMovieRatings,
   getMyMovieRating,
+  deleteMovieRatingAdmin, // ✅ NEW
 } from '../Controllers/RatingsController.js';
+
 import { syncTmdbCreditsAdmin } from '../Controllers/TmdbController.js';
 
 const router = express.Router();
@@ -52,7 +55,7 @@ router.get('/related/:id', getRelatedMovies);
 // ADMIN READ ROUTES (include unpublished / drafts)
 router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
 
-// ✅ TMDb credits sync (casts/director overwrite)
+// TMDb credits sync (casts/director overwrite)
 router.post('/admin/tmdb/sync-credits', protect, admin, syncTmdbCreditsAdmin);
 
 // Admin Latest New list
@@ -74,19 +77,22 @@ router.get('/admin/:id', protect, admin, moviesController.getMovieByIdAdmin);
    ============================================================ */
 router.get('/:id/ratings', getMovieRatings);
 router.get('/:id/ratings/me', protect, getMyMovieRating);
+
+// guest rating (no login)
+router.post('/:id/ratings/guest', createGuestMovieRating);
+
+// logged-in rating
 router.post('/:id/ratings', protect, upsertMovieRating);
+
+// ✅ NEW: admin delete rating (keep BELOW /me and /guest to avoid route conflicts)
+router.delete('/:id/ratings/:ratingId', protect, admin, deleteMovieRatingAdmin);
 
 // PUBLIC single movie (only published)
 router.get('/:id', moviesController.getMovieById);
 
 // * PRIVATE ROUTES *
 router.post('/:id/reviews', protect, moviesController.createMovieReview);
-router.post(
-  '/:id/reviews/:reviewId/reply',
-  protect,
-  admin,
-  moviesController.adminReplyReview
-);
+router.post('/:id/reviews/:reviewId/reply', protect, admin, moviesController.adminReplyReview);
 
 // * ADMIN ROUTES *
 router.put('/bulk-exact', protect, admin, moviesController.bulkExactUpdateMovies);

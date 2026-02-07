@@ -11,6 +11,7 @@ import { ensureMovieExternalRatings } from '../utils/externalRatingsService.js';
 
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
+const MAX_FAQS = 5;
 
 // Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
@@ -150,6 +151,48 @@ const clampLimit = (value, fallback = LATEST_NEW_LIMIT, max = 200) => {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.min(n, max);
+};
+
+/* ============================================================
+   ✅ Q1: Trailer  FAQ normalization (optional fields)
+   ============================================================ */
+const normalizeTrailerUrl = (value) => {
+  if (value === undefined) return undefined;
+  const s = String(value || '').trim();
+  if (!s) return '';
+  if (s.length > 2048) throw new Error('Trailer URL is too long');
+  if (!/^https?:\/\//i.test(s)) {
+    throw new Error('Trailer URL must start with http:// or https://');
+  }
+  return s;
+};
+
+const normalizeFaqs = (faqs) => {
+  if (faqs === undefined) return undefined;
+  if (faqs === null) return [];
+  if (!Array.isArray(faqs)) throw new Error('faqs must be an array');
+
+  const cleaned = faqs
+    .map((f) => ({
+      question: String(f?.question || '').trim(),
+      answer: String(f?.answer || '').trim(),
+    }))
+    .filter((f) => f.question || f.answer);
+
+  const hasPartial = cleaned.some(
+    (f) => (f.question && !f.answer) || (!f.question && f.answer)
+  );
+  if (hasPartial) {
+    throw new Error('Each FAQ must have both question and answer (or remove it)');
+  }
+
+  return cleaned
+    .filter((f) => f.question && f.answer)
+    .slice(0, MAX_FAQS)
+    .map((f) => ({
+      question: f.question.substring(0, 200),
+      answer: f.answer.substring(0, 800),
+    }));
 };
 
 /**
@@ -566,6 +609,8 @@ const updateMovie = asyncHandler(async (req, res) => {
       seoTitle,
       seoDescription,
       seoKeywords,
+      trailerUrl,
+      faqs,
       latest,
       previousHit,
       isPublished,
@@ -640,6 +685,15 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.seoTitle = seoTitle || movie.seoTitle;
     movie.seoDescription = seoDescription || movie.seoDescription;
     movie.seoKeywords = seoKeywords || movie.seoKeywords;
+    const normalizedTrailer = normalizeTrailerUrl(trailerUrl);
+    if (normalizedTrailer !== undefined) {
+      movie.trailerUrl = normalizedTrailer;
+    }
+
+    const normalizedFaqs = normalizeFaqs(faqs);
+    if (normalizedFaqs !== undefined) {
+      movie.faqs = normalizedFaqs;
+    }
     movie.latest = latest !== undefined ? !!latest : movie.latest;
     movie.previousHit =
       previousHit !== undefined ? !!previousHit : movie.previousHit;
@@ -779,6 +833,8 @@ const createMovie = asyncHandler(async (req, res) => {
       seoTitle,
       seoDescription,
       seoKeywords,
+      trailerUrl,
+      faqs,
       latest = false,
       previousHit = false,
       isPublished = false,
@@ -870,6 +926,8 @@ const createMovie = asyncHandler(async (req, res) => {
       seoTitle: seoTitle || name,
       seoDescription: seoDescription || desc.substring(0, 300),
       seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
+      trailerUrl: normalizeTrailerUrl(trailerUrl) ?? '',
+      faqs: normalizeFaqs(faqs) ?? [],
       viewCount: 0,
       latest: !!latest,
       previousHit: !!previousHit,
@@ -1225,6 +1283,8 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'seoTitle',
     'seoDescription',
     'seoKeywords',
+    'trailerUrl',
+     'faqs',
     'latest',
     'previousHit',
     'isPublished',
@@ -1262,7 +1322,14 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
 
       allowedCommon.forEach((field) => {
         if (field in item && field !== 'type') {
-          updateSet[field] = item[field];
+          if (field === 'trailerUrl') {
+      updateSet.trailerUrl =
+        normalizeTrailerUrl(item.trailerUrl);
+    } else if (field === 'faqs') {
+      updateSet.faqs = normalizeFaqs(item.faqs);
+    } else {
+      updateSet[field] = item[field];
+    }
         }
       });
 
@@ -1444,6 +1511,8 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         seoTitle,
         seoDescription,
         seoKeywords,
+        trailerUrl,
+        faqs,
         latest = false,
         previousHit = false,
         isPublished = false,
@@ -1498,6 +1567,8 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         seoDescription: seoDescription || desc.substring(0, 155),
         seoKeywords:
           seoKeywords || `${name}, ${category}, ${language} movies`,
+          trailerUrl: normalizeTrailerUrl(trailerUrl) ?? '',
+        faqs: normalizeFaqs(faqs) ?? [],
         viewCount: 0,
         latest: !!latest,
         previousHit: !!previousHit,

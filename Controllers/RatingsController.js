@@ -1,6 +1,8 @@
 // backend/Controllers/RatingsController.js
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
+import { randomInt } from 'crypto';
+
 import Movie from '../Models/MoviesModel.js';
 import Rating from '../Models/RatingModel.js';
 
@@ -125,6 +127,86 @@ const computeAggregate = async (movieId) => {
   return { avg, count };
 };
 
+/* ============================================================
+   ✅ Guest rating helpers (UPDATED)
+   ============================================================ */
+
+const GUEST_AVATAR = '/images/placeholder.jpg';
+
+// You can expand these lists anytime (more variety = fewer duplicates)
+const FIRST_NAMES = [
+  'Harry','Jennifer','Matthew','Anna','Olivia','Emma','Ava','Sophia','Mia','Amelia',
+  'Charlotte','Evelyn','Abigail','Emily','Ella','Grace','Chloe','Lily','Hannah','Zoe',
+  'Noah','Liam','James','Benjamin','Lucas','Henry','Alexander','William','Daniel','Michael',
+  'Ethan','Jacob','Logan','Jackson','Sebastian','Jack','Aiden','Owen','Samuel','Joseph',
+  'Levi','David','Wyatt','Luke','Isaac','Gabriel','Anthony','Dylan','Leo','Ryan',
+  'Arjun','Rohan','Neha','Aisha','Sara','Fatima','Maya','Nadia','Leila','Isha',
+];
+
+const LAST_NAMES = [
+  'Smith','Johnson','Williams','Brown','Jones','Miller','Davis','Garcia','Rodriguez','Wilson',
+  'Martinez','Anderson','Taylor','Thomas','Hernandez','Moore','Martin','Jackson','Thompson','White',
+  'Lopez','Lee','Gonzalez','Harris','Clark','Lewis','Robinson','Walker','Perez','Hall',
+  'Young','Allen','Sanchez','Wright','King','Scott','Green','Baker','Adams','Nelson',
+  'Hill','Ramirez','Campbell','Mitchell','Roberts','Carter','Phillips','Evans','Turner','Parker',
+  'Collins','Edwards','Stewart','Flores','Morris','Nguyen','Murphy','Rivera','Cook','Rogers',
+];
+
+const MIDDLE_INITIALS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((c) => `${c}.`);
+
+const pick = (arr) => (Array.isArray(arr) && arr.length ? arr[randomInt(arr.length)] : '');
+
+const buildRandomHumanName = ({ withMiddleInitial = false } = {}) => {
+  const first = pick(FIRST_NAMES) || 'User';
+  const last = pick(LAST_NAMES) || 'User';
+
+  if (!withMiddleInitial) return `${first} ${last}`.trim();
+
+  const mid = pick(MIDDLE_INITIALS);
+  return `${first} ${mid} ${last}`.trim();
+};
+
+const generateUniqueGuestNameForMovie = async (movieId, maxTries = 40) => {
+  // First try: First + Last
+  for (let i = 0; i < maxTries; i++) {
+    const name = buildRandomHumanName({ withMiddleInitial: false });
+    // eslint-disable-next-line no-await-in-loop
+    const exists = await Rating.exists({ movieId, guestName: name });
+    if (!exists) return name;
+  }
+
+  // Second try: First + M. + Last (more unique, still human)
+  for (let i = 0; i < maxTries; i++) {
+    const name = buildRandomHumanName({ withMiddleInitial: true });
+    // eslint-disable-next-line no-await-in-loop
+    const exists = await Rating.exists({ movieId, guestName: name });
+    if (!exists) return name;
+  }
+
+  // Ultra-safe fallback (still no "Guest-xxxx"): append a short number
+  const suffix = randomInt(10, 9999);
+  return `${buildRandomHumanName()} ${suffix}`;
+};
+
+const shapeUserForResponse = (ratingRow) => {
+  // Guest rating
+  if (ratingRow?.isGuest || ratingRow?.guestName) {
+    const name = String(ratingRow?.guestName || 'User').trim() || 'User';
+    return { _id: null, fullName: name, image: GUEST_AVATAR, isGuest: true };
+  }
+
+  // Registered user rating
+  if (ratingRow?.userId && typeof ratingRow.userId === 'object') {
+    return {
+      _id: ratingRow.userId._id,
+      fullName: ratingRow.userId.fullName,
+      image: ratingRow.userId.image,
+    };
+  }
+
+  return null;
+};
+
 /**
  * PRIVATE
  * POST /api/movies/:id/ratings
@@ -140,23 +222,21 @@ export const upsertMovieRating = asyncHandler(async (req, res) => {
 
   const comment = safeComment(req.body?.comment);
 
-  const movie = await findMovieByIdOrSlugLean(
-    req.params.id,
-    publicVisibilityFilter
-  );
+  const movie = await findMovieByIdOrSlugLean(req.params.id, publicVisibilityFilter);
 
   if (!movie) {
     res.status(404);
     throw new Error('Movie not found');
   }
 
-  // Best-effort: migrate old Movie.reviews -> ratings collection
   await migrateLegacyReviewsToRatings(movie);
 
-  // One rating per user per movie (upsert)
   const doc = await Rating.findOneAndUpdate(
     { movieId: movie._id, userId: req.user._id },
-    { $set: { rating: ratingValue, comment } },
+    {
+      $set: { rating: ratingValue, comment, isGuest: false },
+      $unset: { guestName: '' },
+    },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   )
     .populate('userId', 'fullName image')
@@ -164,7 +244,6 @@ export const upsertMovieRating = asyncHandler(async (req, res) => {
 
   const aggregate = await computeAggregate(movie._id);
 
-  // Keep Movie fields in sync (used everywhere in your UI: stars / sorting / top rated)
   await Movie.updateOne(
     { _id: movie._id },
     { $set: { rate: aggregate.avg, numberOfReviews: aggregate.count } }
@@ -192,6 +271,88 @@ export const upsertMovieRating = asyncHandler(async (req, res) => {
 
 /**
  * PUBLIC
+ * POST /api/movies/:id/ratings/guest
+ * body: { rating: 1..5, comment?: string }
+ */
+export const createGuestMovieRating = asyncHandler(async (req, res) => {
+  const ratingValue = normalizeNewRating(req.body?.rating);
+
+  if (ratingValue === null) {
+    res.status(400);
+    throw new Error('Rating must be an integer between 1 and 5');
+  }
+
+  const comment = safeComment(req.body?.comment);
+
+  const movie = await findMovieByIdOrSlugLean(req.params.id, publicVisibilityFilter);
+
+  if (!movie) {
+    res.status(404);
+    throw new Error('Movie not found');
+  }
+
+  await migrateLegacyReviewsToRatings(movie);
+
+  let created = null;
+  let guestName = await generateUniqueGuestNameForMovie(movie._id);
+
+  // Retry if a duplicate-key happens (race condition safe)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const fakeUserId = new mongoose.Types.ObjectId();
+
+      // eslint-disable-next-line no-await-in-loop
+      created = await Rating.create({
+        movieId: movie._id,
+        userId: fakeUserId,
+        rating: ratingValue,
+        comment,
+        isGuest: true,
+        guestName,
+      });
+
+      break;
+    } catch (e) {
+      // 11000 = duplicate key (guestName OR movieId+userId)
+      if (e?.code === 11000) {
+        // eslint-disable-next-line no-await-in-loop
+        guestName = await generateUniqueGuestNameForMovie(movie._id);
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  if (!created) {
+    res.status(500);
+    throw new Error('Failed to save guest rating. Please try again.');
+  }
+
+  const aggregate = await computeAggregate(movie._id);
+
+  await Movie.updateOne(
+    { _id: movie._id },
+    { $set: { rate: aggregate.avg, numberOfReviews: aggregate.count } }
+  );
+
+  res.status(201).json({
+    message: 'Rating saved',
+    rating: {
+      _id: created._id,
+      rating: created.rating,
+      comment: created.comment || '',
+      createdAt: created.createdAt,
+      updatedAt: created.updatedAt,
+      user: { _id: null, fullName: guestName, image: GUEST_AVATAR, isGuest: true },
+      isGuest: true,
+      guestName,
+    },
+    aggregate,
+  });
+});
+
+/**
+ * PUBLIC
  * GET /api/movies/:id/ratings?limit=20&page=1
  */
 export const getMovieRatings = asyncHandler(async (req, res) => {
@@ -199,10 +360,7 @@ export const getMovieRatings = asyncHandler(async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const skip = (page - 1) * limit;
 
-  const movie = await findMovieByIdOrSlugLean(
-    req.params.id,
-    publicVisibilityFilter
-  );
+  const movie = await findMovieByIdOrSlugLean(req.params.id, publicVisibilityFilter);
 
   if (!movie) {
     res.status(404);
@@ -239,13 +397,8 @@ export const getMovieRatings = asyncHandler(async (req, res) => {
       rating: r.rating,
       comment: r.comment || '',
       createdAt: r.createdAt,
-      user: r.userId
-        ? {
-            _id: r.userId._id,
-            fullName: r.userId.fullName,
-            image: r.userId.image,
-          }
-        : null,
+      user: shapeUserForResponse(r),
+      isGuest: !!(r?.isGuest || r?.guestName),
     })),
   });
 });
@@ -255,10 +408,7 @@ export const getMovieRatings = asyncHandler(async (req, res) => {
  * GET /api/movies/:id/ratings/me
  */
 export const getMyMovieRating = asyncHandler(async (req, res) => {
-  const movie = await findMovieByIdOrSlugLean(
-    req.params.id,
-    publicVisibilityFilter
-  );
+  const movie = await findMovieByIdOrSlugLean(req.params.id, publicVisibilityFilter);
 
   if (!movie) {
     res.status(404);
@@ -283,5 +433,55 @@ export const getMyMovieRating = asyncHandler(async (req, res) => {
           updatedAt: doc.updatedAt,
         }
       : null,
+  });
+});
+
+/* ============================================================
+   ✅ NEW: ADMIN delete rating
+   ============================================================ */
+/**
+ * ADMIN
+ * DELETE /api/movies/:id/ratings/:ratingId
+ */
+export const deleteMovieRatingAdmin = asyncHandler(async (req, res) => {
+  const movie = await findMovieByIdOrSlugLean(req.params.id, {}); // admin: allow drafts too
+  if (!movie) {
+    res.status(404);
+    throw new Error('Movie not found');
+  }
+
+  const ratingId = String(req.params.ratingId || '').trim();
+  if (!isValidObjectId(ratingId)) {
+    res.status(400);
+    throw new Error('Invalid ratingId');
+  }
+
+  const rating = await Rating.findOne({ _id: ratingId, movieId: movie._id }).lean();
+  if (!rating) {
+    res.status(404);
+    throw new Error('Rating not found');
+  }
+
+  await Rating.deleteOne({ _id: ratingId });
+
+  // Important: remove from legacy Movie.reviews[] too (prevents re-migration)
+  if (rating?.userId) {
+    await Movie.updateOne(
+      { _id: movie._id },
+      { $pull: { reviews: { userId: rating.userId } } }
+    ).catch(() => {});
+  }
+
+  const aggregate = await computeAggregate(movie._id);
+
+  await Movie.updateOne(
+    { _id: movie._id },
+    { $set: { rate: aggregate.avg, numberOfReviews: aggregate.count } }
+  );
+
+  res.json({
+    message: 'Rating removed',
+    deletedRatingId: ratingId,
+    aggregate,
   });
 });
