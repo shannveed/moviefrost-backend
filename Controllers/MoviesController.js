@@ -8,6 +8,7 @@ import { notifyIndexNow, buildMoviePublicUrls } from '../utils/indexNowService.j
 import { ensureMovieTmdbCredits, fetchTmdbCreditsForMovie } from '../utils/tmdbService.js';
 import { ensureMovieExternalRatings } from '../utils/externalRatingsService.js';
 import { revalidateFrontend } from '../utils/frontendRevalidateService.js';
+import { afterMovieMutation } from '../utils/movieIndexing.js';
 
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
@@ -622,6 +623,15 @@ const updateMovie = asyncHandler(async (req, res) => {
       res.status(404);
       throw new Error('Movie not found');
     }
+    const beforeIndexing = {
+      _id: movie._id,
+      slug: movie.slug,
+      isPublished: movie.isPublished,
+      latestNew: movie.latestNew,
+      banner: movie.banner,
+      latest: movie.latest,
+      previousHit: movie.previousHit,
+    };
 
     if (
       latest !== undefined &&
@@ -759,13 +769,14 @@ try {
 }
 
     const updatedMovie = await movie.save();
-    // ✅ IndexNow (Bing/Yandex): notify URL changes (best effort)
     try {
-      if (updatedMovie?.isPublished !== false) {
-        await notifyIndexNow(buildMoviePublicUrls(updatedMovie));
-      }
+  await afterMovieMutation({
+    action: 'update',
+    before: beforeIndexing,
+    after: updatedMovie,
+      });
     } catch (e) {
-      console.warn('[indexnow] updateMovie:', e?.message || e);
+      console.warn('[indexing] updateMovie:', e?.message || e);
     }
     res.status(201).json(updatedMovie);
   } catch (error) {
@@ -778,13 +789,21 @@ const deleteMovie = asyncHandler(async (req, res) => {
   try {
     const movie = await Movie.findById(req.params.id);
     if (movie) {
-      // notify search engines that URL changed (will become 404)
-      try {
-        await notifyIndexNow(buildMoviePublicUrls(movie));
-      } catch (e) {
-        console.warn('[indexnow] deleteMovie:', e?.message || e);
-      }
+      const beforeIndexing = {
+    _id: movie._id,
+    slug: movie.slug,
+    isPublished: movie.isPublished,
+    latestNew: movie.latestNew,
+    banner: movie.banner,
+    latest: movie.latest,
+    previousHit: movie.previousHit,
+  };
       await movie.deleteOne();
+      try {
+    await afterMovieMutation({ action: 'delete', before: beforeIndexing });
+  } catch (e) {
+    console.warn('[indexing] deleteMovie:', e?.message || e);
+  }
       res.json({ message: 'Movie removed' });
     } else {
       res.status(404);
@@ -998,14 +1017,12 @@ const createMovie = asyncHandler(async (req, res) => {
 
     const movie = new Movie(movieData);
     const createdMovie = await movie.save();
-    // ✅ IndexNow (Bing/Yandex): notify URL changes (best effort)
-    try {
-      if (createdMovie?.isPublished !== false) {
-        await notifyIndexNow(buildMoviePublicUrls(createdMovie));
-      }
-    } catch (e) {
-      console.warn('[indexnow] createMovie:', e?.message || e);
-    }
+    // ✅ Revalidate Next ISR + IndexNow (best effort)
+try {
+  await afterMovieMutation({ action: 'create', after: createdMovie });
+} catch (e) {
+  console.warn('[indexing] createMovie:', e?.message || e);
+}
     res.status(201).json(createdMovie);
   } catch (error) {
     res
@@ -1627,6 +1644,29 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
     ordered: false,
   });
 
+  try {
+  const published = insertedMovies.filter((m) => m?.isPublished !== false);
+
+  if (published.length) {
+    // 1) Revalidate list/home once (movie pages are new so no need to revalidate each)
+    const { isFrontendRevalidateEnabled, revalidateFrontend } = await import(
+      '../utils/frontendRevalidateService.js'
+    );
+
+    if (isFrontendRevalidateEnabled()) {
+      await revalidateFrontend({
+        tags: ['movies', 'home'],
+        paths: ['/', '/movies'],
+      });
+    }
+
+    // 2) Ping IndexNow for all new pages (one request, chunked if needed)
+    const urls = published.flatMap((m) => buildMoviePublicUrls(m));
+    await notifyIndexNow(urls);
+  }
+} catch (e) {
+  console.warn('[indexing] bulkCreateMovies:', e?.message || e);
+}
   res.status(201).json({
     message: 'Bulk create executed',
     insertedCount: insertedMovies.length,

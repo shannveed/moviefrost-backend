@@ -1,6 +1,7 @@
 // backend/utils/indexNowService.js
-// Optional IndexNow submitter (safe: never crashes your API)
-// If you don't set INDEXNOW_KEY, everything becomes a no-op.
+// IndexNow submitter (Bing/Yandex/Seznam/Naver etc.)
+// Safe: never crashes your API.
+// Node 18+ required (global fetch).
 
 import dotenv from 'dotenv';
 dotenv.config();
@@ -12,12 +13,22 @@ const FRONTEND_BASE_URL = String(
 const INDEXNOW_KEY = String(process.env.INDEXNOW_KEY || '').trim();
 const INDEXNOW_KEY_LOCATION_ENV = String(process.env.INDEXNOW_KEY_LOCATION || '').trim();
 
-// Official endpoint (Bing also supports https://www.bing.com/indexnow)
 const INDEXNOW_ENDPOINT = String(
   process.env.INDEXNOW_ENDPOINT || 'https://api.indexnow.org/indexnow'
 ).trim();
 
-const DEFAULT_TIMEOUT_MS = Number(process.env.INDEXNOW_TIMEOUT_MS || 6500);
+const INDEXNOW_FALLBACK_ENDPOINT = String(
+  process.env.INDEXNOW_FALLBACK_ENDPOINT || 'https://www.bing.com/indexnow'
+).trim();
+
+const TIMEOUT_MS = Number(process.env.INDEXNOW_TIMEOUT_MS || 3000);
+
+// Warm-instance dedupe (helps when admin saves multiple times quickly)
+const DEDUP_TTL_MS = Number(process.env.INDEXNOW_DEDUP_TTL_MS || 15 * 60 * 1000);
+
+// Your site sets /watch as noindex — don’t ping it by default
+const INCLUDE_WATCH =
+  String(process.env.INDEXNOW_INCLUDE_WATCH || '').toLowerCase() === 'true';
 
 export const isIndexNowEnabled = () => !!INDEXNOW_KEY;
 
@@ -52,7 +63,7 @@ const chunkArray = (arr, size) => {
   return out;
 };
 
-const fetchWithTimeout = async (url, init, timeoutMs = DEFAULT_TIMEOUT_MS) => {
+const fetchWithTimeout = async (url, init, timeoutMs = TIMEOUT_MS) => {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -66,6 +77,68 @@ const fetchWithTimeout = async (url, init, timeoutMs = DEFAULT_TIMEOUT_MS) => {
   }
 };
 
+/* ============================================================
+   ✅ Warm-instance dedupe
+   ============================================================ */
+const recentlyOk = new Map(); // url -> timestamp
+
+const cleanupRecentlyOk = () => {
+  if (!DEDUP_TTL_MS || DEDUP_TTL_MS <= 0) return;
+
+  const now = Date.now();
+  for (const [url, ts] of recentlyOk.entries()) {
+    if (now - ts > DEDUP_TTL_MS) recentlyOk.delete(url);
+  }
+};
+
+const filterRecentlyOk = (urls) => {
+  if (!DEDUP_TTL_MS || DEDUP_TTL_MS <= 0) return urls;
+
+  cleanupRecentlyOk();
+  const now = Date.now();
+
+  return urls.filter((u) => {
+    const ts = recentlyOk.get(u);
+    return !ts || now - ts > DEDUP_TTL_MS;
+  });
+};
+
+const markOk = (urls) => {
+  if (!DEDUP_TTL_MS || DEDUP_TTL_MS <= 0) return;
+  const now = Date.now();
+  urls.forEach((u) => recentlyOk.set(u, now));
+};
+
+/* ============================================================
+   Low-level submit
+   ============================================================ */
+const submitToEndpoint = async (endpoint, payload) => {
+  try {
+    const res = await fetchWithTimeout(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await res.text().catch(() => '');
+
+    return { ok: res.ok, status: res.status, responseText: text };
+  } catch (e) {
+    return {
+      ok: false,
+      status: 0,
+      error: String(e?.message || e || 'indexnow_error'),
+    };
+  }
+};
+
+const shouldFallback = (r) => {
+  if (!r) return true;
+  if (r.status === 0) return true;
+  if (r.status === 429) return true;
+  return r.status >= 500;
+};
+
 const submitChunk = async (urlList, opts = {}) => {
   const key = String(opts.key || INDEXNOW_KEY || '').trim();
   if (!key) return { ok: false, skipped: true, reason: 'missing_key' };
@@ -77,50 +150,42 @@ const submitChunk = async (urlList, opts = {}) => {
     String(opts.keyLocation || INDEXNOW_KEY_LOCATION_ENV || '').trim() ||
     `${baseUrl}/${key}.txt`;
 
-  const payload = {
-    host,
-    key,
-    keyLocation,
-    urlList,
-  };
+  const payload = { host, key, keyLocation, urlList };
 
-  try {
-    const res = await fetchWithTimeout(INDEXNOW_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+  const primary = await submitToEndpoint(INDEXNOW_ENDPOINT, payload);
 
-    const text = await res.text().catch(() => '');
-
-    return {
-      ok: res.ok,
-      status: res.status,
-      responseText: text,
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      status: 0,
-      error: String(e?.message || e || 'indexnow_error'),
-    };
+  if (primary.ok) {
+    return { ...primary, endpoint: INDEXNOW_ENDPOINT, fallbackUsed: false };
   }
+
+  if (
+    INDEXNOW_FALLBACK_ENDPOINT &&
+    INDEXNOW_FALLBACK_ENDPOINT !== INDEXNOW_ENDPOINT &&
+    shouldFallback(primary)
+  ) {
+    const fb = await submitToEndpoint(INDEXNOW_FALLBACK_ENDPOINT, payload);
+    if (fb.ok) {
+      return {
+        ...fb,
+        endpoint: INDEXNOW_FALLBACK_ENDPOINT,
+        fallbackUsed: true,
+        primaryFailed: primary,
+      };
+    }
+  }
+
+  return { ...primary, endpoint: INDEXNOW_ENDPOINT, fallbackUsed: false };
 };
 
 /**
  * Main function
- * Accepts:
- * - string url
- * - array of urls
- * - any mix, relative or absolute
- *
- * Returns:
- *  { skipped, enabled, submitted, attempted, ok, results[] }
+ * Accepts string OR array; supports relative or absolute URLs.
  */
 export const submitIndexNowUrls = async (urls, opts = {}) => {
   const key = String(opts.key || INDEXNOW_KEY || '').trim();
 
   const raw = Array.isArray(urls) ? urls : [urls];
+
   const normalized = uniq(
     raw.map((u) => toAbsoluteUrl(u, opts.baseUrl || FRONTEND_BASE_URL)).filter(Boolean)
   );
@@ -149,15 +214,30 @@ export const submitIndexNowUrls = async (urls, opts = {}) => {
     };
   }
 
+  // ✅ skip URLs we successfully submitted recently (warm lambda only)
+  const filtered = filterRecentlyOk(normalized);
+
+  if (!filtered.length) {
+    return {
+      skipped: true,
+      enabled: true,
+      attempted: normalized.length,
+      submitted: 0,
+      ok: true,
+      reason: 'deduped',
+      results: [],
+    };
+  }
+
   // IndexNow supports up to 10,000 URLs per request
-  const chunks = chunkArray(normalized, 10000);
+  const chunks = chunkArray(filtered, 10000);
   const results = [];
 
   for (const list of chunks) {
-    // Never throw; keep API safe
     // eslint-disable-next-line no-await-in-loop
     const r = await submitChunk(list, opts);
     results.push({ ...r, submitted: list.length });
+    if (r.ok) markOk(list);
   }
 
   const ok = results.every((r) => r.ok || r.skipped);
@@ -165,15 +245,14 @@ export const submitIndexNowUrls = async (urls, opts = {}) => {
   return {
     skipped: false,
     enabled: true,
-    attempted: normalized.length,
-    submitted: normalized.length,
+    attempted: filtered.length,
+    submitted: filtered.length,
     ok,
     results,
   };
 };
 
-/* ========= Convenience helpers (safe exports for older code) ========= */
-
+/* ========= Convenience aliases (keep old imports working) ========= */
 export const submitIndexNow = submitIndexNowUrls;
 export const pingIndexNow = submitIndexNowUrls;
 export const pingIndexNowUrls = submitIndexNowUrls;
@@ -183,14 +262,19 @@ export const sendIndexNow = submitIndexNowUrls;
 export const submitToIndexNow = submitIndexNowUrls;
 export const submitUrls = submitIndexNowUrls;
 
-/** Build your public movie + watch URLs */
+/**
+ * Build public URLs for a Movie.
+ * Default = only /movie (indexable). /watch optional via env.
+ */
 export const buildMoviePublicUrls = (movieDoc, baseUrl = FRONTEND_BASE_URL) => {
   const seg = movieDoc?.slug || movieDoc?._id;
   if (!seg) return [];
-  return [`${baseUrl}/movie/${seg}`, `${baseUrl}/watch/${seg}`];
+
+  const out = [`${baseUrl}/movie/${seg}`];
+  if (INCLUDE_WATCH) out.push(`${baseUrl}/watch/${seg}`);
+  return out;
 };
 
-/** Submit the movie + watch URLs to IndexNow */
 export const submitMovieToIndexNow = async (movieDoc, opts = {}) => {
   const list = buildMoviePublicUrls(movieDoc, opts.baseUrl || FRONTEND_BASE_URL);
   return submitIndexNowUrls(list, opts);
@@ -201,15 +285,7 @@ export const indexNowMoviePing = submitMovieToIndexNow;
 export default {
   isIndexNowEnabled,
   submitIndexNowUrls,
-  submitIndexNow,
-  pingIndexNow,
-  pingIndexNowUrls,
-  indexNowSubmitUrls,
   notifyIndexNow,
-  sendIndexNow,
-  submitToIndexNow,
-  submitUrls,
   buildMoviePublicUrls,
   submitMovieToIndexNow,
-  indexNowMoviePing,
 };
