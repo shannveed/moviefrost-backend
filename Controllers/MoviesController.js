@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import { notifyIndexNow, buildMoviePublicUrls } from '../utils/indexNowService.js';
 import { ensureMovieTmdbCredits, fetchTmdbCreditsForMovie } from '../utils/tmdbService.js';
 import { ensureMovieExternalRatings } from '../utils/externalRatingsService.js';
-
+import { revalidateFrontend } from '../utils/frontendRevalidateService.js';
 
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
@@ -1399,6 +1399,12 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
 
   const result = await Movie.bulkWrite(operations, { ordered: false });
 
+  // ✅ Make Next.js show updates instantly (ISR cache purge)
+ const revalidateResult = await revalidateFrontend({
+   tags: ['movies', 'home'],
+   paths: ['/', '/movies'],
+ });
+
   res.status(200).json({
     message: 'Bulk exact update executed',
     matched: result.matchedCount ?? result.result?.nMatched ?? 0,
@@ -1406,6 +1412,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     upserted: result.upsertedCount ?? 0,
     errorsCount: errors.length,
     errors,
+    revalidate: revalidateResult, // optional debug (safe)
   });
 });
 
