@@ -97,6 +97,10 @@ const moviesSchema = mongoose.Schema(
     },
     videoUrl3: { type: String, default: '' },
 
+    // ✅ NEW (Q1): optional extra server (used as "Server 1" when present)
+    // Works for BOTH Movie and WebSeries (WebSeries uses this as all-in-one episodes server).
+    videoUrl7: { type: String, trim: true, default: '' },
+
     downloadUrl: { type: String, default: '' },
 
     // WebSeries episodes

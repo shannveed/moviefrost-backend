@@ -602,6 +602,7 @@ const updateMovie = asyncHandler(async (req, res) => {
       video,
       videoUrl2,
       videoUrl3, // ✅ NEW (Q1)
+      videoUrl7, // ✅ NEW (Q1): optional extra server (Server 1 when present)
       episodes,
       casts,
       director,
@@ -663,7 +664,10 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.time = time || movie.time;
     movie.language = language || movie.language;
     movie.year = year || movie.year;
-
+    // ✅ NEW (Q1): optional extra server (works for Movie + WebSeries)
+    if (videoUrl7 !== undefined) {
+      movie.videoUrl7 = String(videoUrl7 || '').trim();
+    }
     if (director !== undefined) {
       movie.director = String(director || '').trim();
     }
@@ -844,6 +848,7 @@ const createMovie = asyncHandler(async (req, res) => {
       video,
       videoUrl2,
       videoUrl3, // ✅ NEW (Q1)
+     videoUrl7, // ✅ NEW (Q1): optional extra server (Server 1 when present) 
       episodes,
       casts,
       director,
@@ -942,6 +947,7 @@ const createMovie = asyncHandler(async (req, res) => {
       casts: [],
       director: String(director || '').trim(),
       imdbId: String(imdbId || '').trim(),
+      videoUrl7: String(videoUrl7 || '').trim(),
       seoTitle: seoTitle || name,
       seoDescription: seoDescription || desc.substring(0, 300),
       seoKeywords: seoKeywords || `${name}, ${category}, ${language} movies`,
@@ -1297,6 +1303,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'casts',
     'director',
     'imdbId', // ✅ PATCH
+    'videoUrl7', // ✅ NEW (Q1)
     'seoTitle',
     'seoDescription',
     'seoKeywords',
@@ -1344,6 +1351,8 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
         normalizeTrailerUrl(item.trailerUrl);
     } else if (field === 'faqs') {
       updateSet.faqs = normalizeFaqs(item.faqs);
+      } else if (field === 'videoUrl7') {
+      updateSet.videoUrl7 = String(item.videoUrl7 || '').trim();
     } else {
       updateSet[field] = item[field];
     }
@@ -1527,6 +1536,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         video,
         videoUrl2,
         videoUrl3, // ✅ NEW (Q1)
+        videoUrl7, // ✅ NEW (Q1): optional extra server (Server 1 when present)
         episodes,
         casts,
         director,
@@ -1587,6 +1597,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         casts: [],
         director: String(director || '').trim(),
         imdbId: String(imdbId || '').trim(),
+        videoUrl7: String(videoUrl7 || '').trim(),
         seoTitle: seoTitle || name,
         seoDescription: seoDescription || desc.substring(0, 155),
         seoKeywords:
