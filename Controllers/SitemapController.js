@@ -116,11 +116,14 @@ ${urls
    ============================================================ */
 export const generateSitemapIndex = asyncHandler(async (_req, res) => {
   const now = new Date().toISOString();
-
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <sitemap>
     <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap.xml`)}</loc>
+    <lastmod>${escapeXml(now)}</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap-actors.xml`)}</loc>
     <lastmod>${escapeXml(now)}</lastmod>
   </sitemap>
 </sitemapindex>`;
