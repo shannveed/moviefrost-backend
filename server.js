@@ -26,9 +26,6 @@ import watchRequestsRouter from './routes/WatchRequestsRouter.js';
 import pushRouter from './routes/PushRouter.js';
 import actorsRouter from './routes/ActorsRouter.js';
 
-// ✅ NEW
-import { geoBlock } from './middlewares/geoBlock.js';
-
 dotenv.config();
 
 // Ensure NODE_ENV always has a sensible default
@@ -148,9 +145,6 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.set('trust proxy', 1);
-
-// ✅ NEW: Geo allowlist for backend direct access
-app.use(geoBlock);
 
 // robots.txt for backend domain (frontend has its own /robots.txt)
 app.use('/robots.txt', (_req, res) => {
