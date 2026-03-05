@@ -32,8 +32,8 @@ const pingSearchEngines = (sitemapUrl) => {
   try {
     if (process.env.NODE_ENV !== 'production') return;
     const encoded = encodeURIComponent(sitemapUrl);
-    fetch(`https://www.google.com/ping?sitemap=${encoded}`).catch(() => {});
-    fetch(`https://www.bing.com/ping?sitemap=${encoded}`).catch(() => {});
+    fetch(`https://www.google.com/ping?sitemap=${encoded}`).catch(() => { });
+    fetch(`https://www.bing.com/ping?sitemap=${encoded}`).catch(() => { });
   } catch {
     // ignore ping failures
   }
@@ -92,15 +92,15 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls
-  .map(
-    (u) => `  <url>
+      .map(
+        (u) => `  <url>
     <loc>${escapeXml(u.loc)}</loc>
     ${u.lastmod ? `<lastmod>${escapeXml(u.lastmod)}</lastmod>` : ''}
     <changefreq>${escapeXml(u.changefreq)}</changefreq>
     <priority>${escapeXml(u.priority)}</priority>
   </url>`
-  )
-  .join('\n')}
+      )
+      .join('\n')}
 </urlset>`;
 
   setSitemapHeaders(res);
@@ -112,18 +112,16 @@ ${urls
 /* ============================================================
    SITEMAP INDEX
    GET /sitemap-index.xml
-   ✅ Video sitemap removed
+
+   ✅ Actors sitemap removed (only main sitemap remains)
    ============================================================ */
 export const generateSitemapIndex = asyncHandler(async (_req, res) => {
   const now = new Date().toISOString();
+
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <sitemap>
     <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap.xml`)}</loc>
-    <lastmod>${escapeXml(now)}</lastmod>
-  </sitemap>
-  <sitemap>
-    <loc>${escapeXml(`${FRONTEND_BASE_URL}/sitemap-actors.xml`)}</loc>
     <lastmod>${escapeXml(now)}</lastmod>
   </sitemap>
 </sitemapindex>`;
@@ -135,53 +133,16 @@ export const generateSitemapIndex = asyncHandler(async (_req, res) => {
 });
 
 /* ============================================================
-   ACTORS SITEMAP (optional, NOT in sitemap-index)
+   ACTORS SITEMAP
    GET /sitemap-actors.xml
+
+   ✅ DISABLED: return 410 so search engines drop it.
    ============================================================ */
 export const generateActorsSitemap = asyncHandler(async (_req, res) => {
-  const movies = await Movie.find(publicVisibilityFilter)
-    .select('casts director directorSlug updatedAt')
-    .lean();
-
-  const seen = new Map(); // slug -> lastmod ISO
-
-  for (const m of movies) {
-    const lastmod = m.updatedAt ? new Date(m.updatedAt).toISOString() : null;
-
-    // director
-    if (m.directorSlug) {
-      if (!seen.has(m.directorSlug)) seen.set(m.directorSlug, lastmod);
-    }
-
-    // casts
-    if (Array.isArray(m.casts)) {
-      for (const c of m.casts) {
-        const s = c?.slug || '';
-        if (!s) continue;
-        if (!seen.has(s)) seen.set(s, lastmod);
-      }
-    }
-  }
-
-  // safety cap
-  const slugs = Array.from(seen.keys()).slice(0, 45000);
-
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${slugs
-  .map((s) => {
-    const loc = `${FRONTEND_BASE_URL}/actor/${s}`;
-    const lm = seen.get(s);
-    return `  <url>
-    <loc>${escapeXml(loc)}</loc>
-    ${lm ? `<lastmod>${escapeXml(lm)}</lastmod>` : ''}
-    <changefreq>weekly</changefreq>
-    <priority>0.6</priority>
-  </url>`;
-  })
-  .join('\n')}
-</urlset>`;
-
-  setSitemapHeaders(res);
-  res.send(xml);
+  res
+    .status(410)
+    .set('Content-Type', 'text/plain; charset=utf-8')
+    .set('Cache-Control', 'public, max-age=86400, s-maxage=86400')
+    .set('X-Robots-Tag', 'noindex, follow')
+    .send('sitemap-actors.xml has been removed.');
 });
