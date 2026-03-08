@@ -5,50 +5,107 @@ import { escapeRegex, slugify } from '../utils/slugify.js';
 
 const publicVisibilityFilter = { isPublished: { $ne: false } };
 
-const clampLimit = (value, fallback = 24, max = 60) => {
+const DEFAULT_LIMIT = 24;
+const MAX_LIMIT = 100;
+const PLACEHOLDER_IMAGE = '/images/placeholder.jpg';
+
+const clampPositiveInt = (value, fallback = DEFAULT_LIMIT, max = MAX_LIMIT) => {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.min(n, max);
+  return Math.min(Math.floor(n), max);
+};
+
+const titleCaseFromSlug = (slug = '') =>
+  String(slug || '')
+    .split('-')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+    .trim();
+
+const buildNameRegexFromSlug = (slug = '') => {
+  const guess = String(slug || '')
+    .replace(/-/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!guess) return null;
+
+  return new RegExp(
+    `^${escapeRegex(guess).replace(/\s+/g, '\\s+')}$`,
+    'i'
+  );
+};
+
+const matchesActorEntry = (entry, targetSlug, nameRegex) => {
+  const s = String(entry?.slug || '').trim().toLowerCase();
+  const n = String(entry?.name || '').trim();
+
+  if (s && s === targetSlug) return true;
+  if (nameRegex && n && nameRegex.test(n)) return true;
+  if (!s && n && slugify(n) === targetSlug) return true;
+
+  return false;
+};
+
+const matchesDirector = (movieLike, targetSlug, nameRegex) => {
+  const s = String(movieLike?.directorSlug || '').trim().toLowerCase();
+  const n = String(movieLike?.director || '').trim();
+
+  if (s && s === targetSlug) return true;
+  if (nameRegex && n && nameRegex.test(n)) return true;
+  if (!s && n && slugify(n) === targetSlug) return true;
+
+  return false;
 };
 
 /**
  * PUBLIC
  * GET /api/actors/:slug?page=1&limit=24
- * Returns titles where person appears in casts OR as director
  */
 export const getActorBySlug = asyncHandler(async (req, res) => {
-  const slug = String(req.params.slug || '').trim().toLowerCase();
-  if (!slug) {
+  const rawSlug = String(req.params.slug || '').trim().toLowerCase();
+
+  if (!rawSlug) {
     res.status(400);
     throw new Error('Actor slug is required');
   }
 
-  const page = Math.max(1, Number(req.query.page) || 1);
-  const limit = clampLimit(req.query.limit, 24, 60);
+  const page = clampPositiveInt(req.query.page, 1, 100000);
+  const limit = clampPositiveInt(req.query.limit, DEFAULT_LIMIT, MAX_LIMIT);
   const skip = (page - 1) * limit;
 
-  const guessedName = slug.replace(/-+/g, ' ').trim();
-  const nameRegex = new RegExp(`^${escapeRegex(guessedName)}$`, 'i');
+  const nameRegex = buildNameRegexFromSlug(rawSlug);
+
+  const actorOr = [{ 'casts.slug': rawSlug }];
+  const directorOr = [{ directorSlug: rawSlug }];
+
+  if (nameRegex) {
+    actorOr.push({ 'casts.name': nameRegex });
+    directorOr.push({ director: nameRegex });
+  }
 
   const filter = {
     ...publicVisibilityFilter,
-    $or: [
-      { 'casts.slug': slug },
-      { directorSlug: slug },
-      { 'casts.name': nameRegex },
-      { director: nameRegex },
-    ],
+    $or: [...actorOr, ...directorOr],
   };
 
-  const [total, rows] = await Promise.all([
+  const [total, movies, actorProbe, directorProbe] = await Promise.all([
     Movie.countDocuments(filter),
+
     Movie.find(filter)
       .sort({ latest: -1, orderIndex: 1, createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select(
-        '_id slug name titleImage image thumbnailInfo type category year director directorSlug casts'
-      )
+      .select('_id slug name titleImage thumbnailInfo type category image year')
+      .lean(),
+
+    Movie.findOne({ ...publicVisibilityFilter, $or: actorOr })
+      .select('casts')
+      .lean(),
+
+    Movie.findOne({ ...publicVisibilityFilter, $or: directorOr })
+      .select('director directorSlug')
       .lean(),
   ]);
 
@@ -57,60 +114,38 @@ export const getActorBySlug = asyncHandler(async (req, res) => {
     throw new Error('Actor not found');
   }
 
-  // best-effort resolve display name + image + roles
-  let displayName = guessedName;
-  let image = '';
-  const roles = new Set();
+  let actorName = '';
+  let actorImage = '';
 
-  for (const m of rows) {
-    if (m?.director && slugify(m.director) === slug) {
-      displayName = m.director;
-      roles.add('director');
-    }
-
-    const castMatch = Array.isArray(m?.casts)
-      ? m.casts.find(
-          (c) =>
-            c?.slug === slug ||
-            slugify(c?.name || '') === slug ||
-            nameRegex.test(String(c?.name || ''))
-        )
-      : null;
+  if (Array.isArray(actorProbe?.casts)) {
+    const castMatch = actorProbe.casts.find((c) =>
+      matchesActorEntry(c, rawSlug, nameRegex)
+    );
 
     if (castMatch) {
-      displayName = castMatch.name || displayName;
-      image = image || castMatch.image || '';
-      roles.add('actor');
+      actorName = String(castMatch.name || '').trim();
+      actorImage = String(castMatch.image || '').trim();
     }
-
-    if (image && roles.size >= 1) break;
   }
 
-  res.setHeader(
-    'Cache-Control',
-    'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400'
-  );
+  if (!actorName && matchesDirector(directorProbe, rawSlug, nameRegex)) {
+    actorName = String(directorProbe?.director || '').trim();
+  }
 
-  res.json({
+  const roles = [];
+  if (actorProbe) roles.push('actor');
+  if (directorProbe) roles.push('director');
+
+  res.status(200).json({
     actor: {
-      name: displayName,
-      slug,
-      image,
-      roles: Array.from(roles),
+      slug: rawSlug,
+      name: actorName || titleCaseFromSlug(rawSlug) || 'Actor',
+      image: actorImage || PLACEHOLDER_IMAGE,
+      roles: roles.length ? roles : ['actor'],
     },
+    movies,
     page,
-    pages: Math.ceil(total / limit) || 1,
+    pages: Math.max(1, Math.ceil(total / limit)),
     total,
-    movies: rows.map((m) => ({
-      _id: m._id,
-      slug: m.slug,
-      name: m.name,
-      titleImage: m.titleImage,
-      image: m.image,
-      thumbnailInfo: m.thumbnailInfo,
-      type: m.type,
-      category: m.category,
-      year: m.year,
-    })),
   });
 });
