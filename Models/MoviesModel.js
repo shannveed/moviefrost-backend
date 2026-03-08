@@ -2,6 +2,11 @@
 import mongoose from 'mongoose';
 import { slugify } from '../utils/slugify.js';
 
+const clampText = (value, max) =>
+  String(value ?? '')
+    .trim()
+    .substring(0, max);
+
 const reviewSchema = mongoose.Schema(
   {
     userName: { type: String, required: true },
@@ -183,6 +188,7 @@ const moviesSchema = mongoose.Schema(
 );
 
 // ✅ Keep cast/director slugs synced + keep tmdbType safe
+// ✅ ALSO clamp legacy SEO/FAQ data so old bad records don't break saves/prerender
 moviesSchema.pre('validate', function (next) {
   try {
     // casts slug
@@ -190,13 +196,32 @@ moviesSchema.pre('validate', function (next) {
       for (const c of this.casts) {
         if (!c) continue;
         const n = String(c.name || '').trim();
+        c.name = n;
+        c.image = String(c.image || '').trim();
         c.slug = n ? slugify(n) : '';
       }
     }
 
     // director slug
     const d = String(this.director || '').trim();
+    this.director = d;
     this.directorSlug = d ? slugify(d) : '';
+
+    // ✅ hard-clamp legacy SEO fields before validators run
+    this.seoTitle = clampText(this.seoTitle, 100);
+    this.seoDescription = clampText(this.seoDescription, 300);
+    this.seoKeywords = String(this.seoKeywords ?? '').trim();
+
+    // ✅ defensive cleanup for legacy FAQ data
+    if (Array.isArray(this.faqs)) {
+      this.faqs = this.faqs
+        .map((f) => ({
+          question: clampText(f?.question, 200),
+          answer: clampText(f?.answer, 800),
+        }))
+        .filter((f) => f.question && f.answer)
+        .slice(0, 5);
+    }
 
     // ✅ prevent enum validation crashes if DB contains junk
     const t = String(this.tmdbType ?? '').trim();
