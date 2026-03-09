@@ -1,7 +1,12 @@
 // backend/Controllers/SitemapController.js
 import asyncHandler from 'express-async-handler';
 import Movie from '../Models/MoviesModel.js';
-import Categories from '../Models/CategoriesModel.js';
+import {
+  getPublishedGenrePages,
+  getPublishedIndustryPages,
+  getPublishedLanguagePages,
+  getPublishedYearPages,
+} from '../utils/discoveryPages.js';
 
 const FRONTEND_BASE_URL = (
   process.env.PUBLIC_FRONTEND_URL || 'https://www.moviefrost.com'
@@ -21,7 +26,6 @@ const publicVisibilityFilter = { isPublished: { $ne: false } };
 
 const setSitemapHeaders = (res) => {
   res.header('Content-Type', 'application/xml; charset=UTF-8');
-  // Helps Vercel edge caching + reduces DB hits and timeouts
   res.header(
     'Cache-Control',
     'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400'
@@ -39,24 +43,72 @@ const pingSearchEngines = (sitemapUrl) => {
   }
 };
 
+const addUniqueUrl = (urls, seen, entry) => {
+  const loc = String(entry?.loc || '').trim();
+  if (!loc || seen.has(loc)) return;
+  seen.add(loc);
+  urls.push(entry);
+};
+
 /* ============================================================
-   MAIN SITEMAP (pages)
+   MAIN SITEMAP
    GET /sitemap.xml
    ============================================================ */
 export const generateSitemap = asyncHandler(async (_req, res) => {
-  const [movies, categories] = await Promise.all([
+  const [
+    movies,
+    categoryValues,
+    languageValues,
+    yearValues,
+    browseByValues,
+  ] = await Promise.all([
     Movie.find(publicVisibilityFilter).select('_id slug updatedAt').lean(),
-    Categories.find({}).select('title updatedAt').lean(),
+    Movie.distinct('category', {
+      ...publicVisibilityFilter,
+      category: { $nin: [null, ''] },
+    }),
+    Movie.distinct('language', {
+      ...publicVisibilityFilter,
+      language: { $nin: [null, ''] },
+    }),
+    Movie.distinct('year', {
+      ...publicVisibilityFilter,
+      year: { $nin: [null, ''] },
+    }),
+    Movie.distinct('browseBy', {
+      ...publicVisibilityFilter,
+      browseBy: { $nin: [null, ''] },
+    }),
   ]);
+
+  const genrePages = getPublishedGenrePages(categoryValues);
+  const languagePages = getPublishedLanguagePages(languageValues);
+  const yearPages = getPublishedYearPages(yearValues);
+  const industryPages = getPublishedIndustryPages(browseByValues);
+
+  const now = new Date().toISOString();
+  const urls = [];
+  const seen = new Set();
 
   const staticPages = [
     { loc: `${FRONTEND_BASE_URL}/`, changefreq: 'daily', priority: '1.0' },
     { loc: `${FRONTEND_BASE_URL}/movies`, changefreq: 'daily', priority: '0.9' },
     { loc: `${FRONTEND_BASE_URL}/about-us`, changefreq: 'weekly', priority: '0.7' },
     { loc: `${FRONTEND_BASE_URL}/contact-us`, changefreq: 'weekly', priority: '0.7' },
+    { loc: `${FRONTEND_BASE_URL}/dmca`, changefreq: 'monthly', priority: '0.6' },
+    {
+      loc: `${FRONTEND_BASE_URL}/privacy-policy`,
+      changefreq: 'monthly',
+      priority: '0.6',
+    },
+    {
+      loc: `${FRONTEND_BASE_URL}/terms-of-service`,
+      changefreq: 'monthly',
+      priority: '0.6',
+    },
   ];
 
-  const urls = [...staticPages];
+  for (const page of staticPages) addUniqueUrl(urls, seen, page);
 
   // Movie detail pages
   for (const movie of movies) {
@@ -66,7 +118,7 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
 
     const pathSegment = movie.slug || movie._id;
 
-    urls.push({
+    addUniqueUrl(urls, seen, {
       loc: `${FRONTEND_BASE_URL}/movie/${pathSegment}`,
       lastmod,
       changefreq: 'weekly',
@@ -74,18 +126,43 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     });
   }
 
-  // Category listing pages
-  for (const cat of categories) {
-    const title = cat.title || '';
-    const lastmod = cat.updatedAt
-      ? new Date(cat.updatedAt).toISOString()
-      : undefined;
-
-    urls.push({
-      loc: `${FRONTEND_BASE_URL}/movies?category=${encodeURIComponent(title)}`,
-      lastmod,
+  // Genre landing pages
+  for (const genre of genrePages) {
+    addUniqueUrl(urls, seen, {
+      loc: `${FRONTEND_BASE_URL}/genre/${genre.slug}`,
+      lastmod: now,
       changefreq: 'weekly',
-      priority: '0.7',
+      priority: '0.8',
+    });
+  }
+
+  // Industry landing pages
+  for (const industry of industryPages) {
+    addUniqueUrl(urls, seen, {
+      loc: `${FRONTEND_BASE_URL}/industry/${industry.slug}`,
+      lastmod: now,
+      changefreq: 'weekly',
+      priority: '0.85',
+    });
+  }
+
+  // Year landing pages
+  for (const year of yearPages) {
+    addUniqueUrl(urls, seen, {
+      loc: `${FRONTEND_BASE_URL}/year/${year.slug}`,
+      lastmod: now,
+      changefreq: 'weekly',
+      priority: '0.75',
+    });
+  }
+
+  // Language landing pages
+  for (const language of languagePages) {
+    addUniqueUrl(urls, seen, {
+      loc: `${FRONTEND_BASE_URL}/language/${language.slug}`,
+      lastmod: now,
+      changefreq: 'weekly',
+      priority: '0.75',
     });
   }
 
@@ -112,8 +189,6 @@ ${urls
 /* ============================================================
    SITEMAP INDEX
    GET /sitemap-index.xml
-
-   ✅ Actors sitemap removed (only main sitemap remains)
    ============================================================ */
 export const generateSitemapIndex = asyncHandler(async (_req, res) => {
   const now = new Date().toISOString();
@@ -135,8 +210,6 @@ export const generateSitemapIndex = asyncHandler(async (_req, res) => {
 /* ============================================================
    ACTORS SITEMAP
    GET /sitemap-actors.xml
-
-   ✅ DISABLED: return 410 so search engines drop it.
    ============================================================ */
 export const generateActorsSitemap = asyncHandler(async (_req, res) => {
   res
