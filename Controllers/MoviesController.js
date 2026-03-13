@@ -9,6 +9,7 @@ import { ensureMovieTmdbCredits, fetchTmdbCreditsForMovie } from '../utils/tmdbS
 import { ensureMovieExternalRatings } from '../utils/externalRatingsService.js';
 import { revalidateFrontend } from '../utils/frontendRevalidateService.js';
 import { afterMovieMutation } from '../utils/movieIndexing.js';
+import { slugify } from '../utils/slugify.js';
 
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
@@ -96,6 +97,131 @@ const generateUniqueSlug = async (name, year, existingId = null) => {
 
   return slug;
 };
+
+const toNullableNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const toIsoOrNull = (value) => {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+const buildPlainExternalRatings = (movie) => ({
+  imdb: {
+    rating: toNullableNumber(movie?.externalRatings?.imdb?.rating),
+    votes: toNullableNumber(movie?.externalRatings?.imdb?.votes),
+    url: String(movie?.externalRatings?.imdb?.url || '').trim(),
+  },
+  rottenTomatoes: {
+    rating: toNullableNumber(movie?.externalRatings?.rottenTomatoes?.rating),
+    url: String(movie?.externalRatings?.rottenTomatoes?.url || '').trim(),
+  },
+});
+
+const normalizeCastForReadPersist = (cast) => {
+  const name = String(cast?.name || '').trim();
+  const image = String(cast?.image || '').trim();
+
+  return {
+    ...(cast?._id ? { _id: cast._id } : {}),
+    name,
+    image,
+    slug: name ? slugify(name) : '',
+  };
+};
+
+const syncReadPathDerivedFields = (movie) => {
+  if (!movie) return;
+
+  movie.slug = String(movie.slug || '').trim();
+  movie.imdbId = String(movie.imdbId || '').trim();
+
+  const director = String(movie.director || '').trim();
+  movie.director = director;
+  movie.directorSlug = director ? slugify(director) : '';
+
+  const tmdbType = String(movie.tmdbType || '').trim();
+  movie.tmdbType = ['', 'movie', 'tv'].includes(tmdbType) ? tmdbType : '';
+
+  movie.casts = Array.isArray(movie.casts)
+    ? movie.casts
+      .map(normalizeCastForReadPersist)
+      .filter((c) => c.name && c.image)
+    : [];
+};
+
+const getReadPathSideEffectsSnapshot = (movie) =>
+  JSON.stringify({
+    slug: String(movie?.slug || '').trim(),
+    imdbId: String(movie?.imdbId || '').trim(),
+    externalRatings: buildPlainExternalRatings(movie),
+    externalRatingsUpdatedAt: toIsoOrNull(movie?.externalRatingsUpdatedAt),
+    casts: Array.isArray(movie?.casts)
+      ? movie.casts.map((c) => ({
+        name: String(c?.name || '').trim(),
+        image: String(c?.image || '').trim(),
+        slug: String(c?.slug || '').trim(),
+      }))
+      : [],
+    director: String(movie?.director || '').trim(),
+    directorSlug: String(movie?.directorSlug || '').trim(),
+    tmdbId: toNullableNumber(movie?.tmdbId),
+    tmdbType: String(movie?.tmdbType || '').trim(),
+    tmdbCreditsUpdatedAt: toIsoOrNull(movie?.tmdbCreditsUpdatedAt),
+  });
+
+const buildReadPathPersistSet = (movie) => {
+  const set = {
+    imdbId: String(movie?.imdbId || '').trim(),
+    externalRatings: buildPlainExternalRatings(movie),
+    externalRatingsUpdatedAt: movie?.externalRatingsUpdatedAt || null,
+    casts: Array.isArray(movie?.casts)
+      ? movie.casts.map(normalizeCastForReadPersist)
+      : [],
+    director: String(movie?.director || '').trim(),
+    directorSlug: String(movie?.directorSlug || '').trim(),
+    tmdbId: toNullableNumber(movie?.tmdbId),
+    tmdbType: String(movie?.tmdbType || '').trim(),
+    tmdbCreditsUpdatedAt: movie?.tmdbCreditsUpdatedAt || null,
+  };
+
+  const slug = String(movie?.slug || '').trim();
+  if (slug) set.slug = slug;
+
+  return set;
+};
+
+/**
+ * Persist GET-side effects WITHOUT touching updatedAt.
+ *
+ * Why:
+ * - page views should increment viewCount
+ * - GET-time cache/backfill fields may also need persistence
+ * - but none of these should fake sitemap/content freshness
+ */
+const persistReadPathSideEffectsAndView = async (movie, beforeSnapshot) => {
+  if (!movie?._id) return;
+
+  syncReadPathDerivedFields(movie);
+
+  const afterSnapshot = getReadPathSideEffectsSnapshot(movie);
+
+  const update = {
+    $inc: { viewCount: 1 },
+  };
+
+  if (beforeSnapshot !== afterSnapshot) {
+    update.$set = buildReadPathPersistSet(movie);
+  }
+
+  await Movie.updateOne({ _id: movie._id }, update, { timestamps: false });
+};
+
+
 
 // Find movie by id or slug, optionally with extra filter
 const findMovieByIdOrSlug = async (param, extraFilter = {}) => {
@@ -443,6 +569,10 @@ const getMovieById = asyncHandler(async (req, res) => {
     throw new Error('Movie not found');
   }
 
+  // Snapshot BEFORE GET-time mutations so we can persist only side effects
+  // without changing updatedAt.
+  const beforeSnapshot = getReadPathSideEffectsSnapshot(movie);
+
   if (!movie.slug) {
     const slugYear =
       typeof movie.year === 'number'
@@ -457,17 +587,28 @@ const getMovieById = asyncHandler(async (req, res) => {
   } catch (e) {
     console.warn('[externalRatings] skipped:', e?.message || e);
   }
-// ✅ TMDb casts/director — best effort, cached
+
+  // ✅ TMDb casts/director — best effort, cached
   try {
     await ensureMovieTmdbCredits(movie);
   } catch (e) {
     console.warn('[tmdb] credits skipped:', e?.message || e);
   }
-  movie.viewCount = (movie.viewCount || 0) + 1;
-  await movie.save();
+
+  // Keep response behavior same
+  movie.viewCount = Number(movie.viewCount || 0) + 1;
+
+  // Persist view count + GET-side cache/backfill fields
+  // WITHOUT touching updatedAt.
+  try {
+    await persistReadPathSideEffectsAndView(movie, beforeSnapshot);
+  } catch (e) {
+    console.warn('[movie-view] public side-effect persist skipped:', e?.message || e);
+  }
 
   res.json(movie);
 });
+
 
 // ADMIN: get movie by id/slug (includes drafts)
 const getMovieByIdAdmin = asyncHandler(async (req, res) => {
@@ -479,6 +620,10 @@ const getMovieByIdAdmin = asyncHandler(async (req, res) => {
     throw new Error('Movie not found');
   }
 
+  // Snapshot BEFORE GET-time mutations so we can persist only side effects
+  // without changing updatedAt.
+  const beforeSnapshot = getReadPathSideEffectsSnapshot(movie);
+
   if (!movie.slug) {
     const slugYear =
       typeof movie.year === 'number'
@@ -493,18 +638,28 @@ const getMovieByIdAdmin = asyncHandler(async (req, res) => {
   } catch (e) {
     console.warn('[externalRatings] skipped:', e?.message || e);
   }
-// ✅ TMDb casts/director — best effort, cached
-try {
-  await ensureMovieTmdbCredits(movie);
-} catch (e) {
-  console.warn('[tmdb] credits skipped:', e?.message || e);
-}
 
-  movie.viewCount = (movie.viewCount || 0) + 1;
-  await movie.save();
+  // ✅ TMDb casts/director — best effort, cached
+  try {
+    await ensureMovieTmdbCredits(movie);
+  } catch (e) {
+    console.warn('[tmdb] credits skipped:', e?.message || e);
+  }
+
+  // Keep response behavior same
+  movie.viewCount = Number(movie.viewCount || 0) + 1;
+
+  // Persist view count + GET-side cache/backfill fields
+  // WITHOUT touching updatedAt.
+  try {
+    await persistReadPathSideEffectsAndView(movie, beforeSnapshot);
+  } catch (e) {
+    console.warn('[movie-view] admin side-effect persist skipped:', e?.message || e);
+  }
 
   res.json(movie);
 });
+
 
 // PUBLIC: top rated (only published)
 const getTopRatedMovies = asyncHandler(async (req, res) => {
@@ -645,7 +800,7 @@ const updateMovie = asyncHandler(async (req, res) => {
     }
 
     const originalType = movie.type;
-   const originalName = movie.name;
+    const originalName = movie.name;
     const originalYear = movie.year;
     const originalImdbId = String(movie.imdbId || '').trim();
 
@@ -675,17 +830,17 @@ const updateMovie = asyncHandler(async (req, res) => {
       movie.imdbId = String(imdbId || '').trim();
     }
 
-     const identityChanged =
-   movie.type !== originalType ||
-   movie.name !== originalName ||
-   movie.year !== originalYear ||
-   String(movie.imdbId || '').trim() !== originalImdbId;
+    const identityChanged =
+      movie.type !== originalType ||
+      movie.name !== originalName ||
+      movie.year !== originalYear ||
+      String(movie.imdbId || '').trim() !== originalImdbId;
 
- if (identityChanged) {
-   movie.tmdbCreditsUpdatedAt = null;
-   movie.tmdbId = null;
-   movie.tmdbType = '';
- }
+    if (identityChanged) {
+      movie.tmdbCreditsUpdatedAt = null;
+      movie.tmdbId = null;
+      movie.tmdbType = '';
+    }
 
     if (identityChanged) {
       // Force refresh of external ratings when name/year/imdbId changes
@@ -762,22 +917,22 @@ const updateMovie = asyncHandler(async (req, res) => {
         );
       }
     }
-// ✅ Best effort: refresh TMDb casts/director (overwrite old manual casts)
-try {
-  await ensureMovieTmdbCredits(movie, { 
-    force: identityChanged, 
-    castLimit: 20 
-  });
-} catch (e) {
-  console.warn('[tmdb] update sync skipped:', e?.message || e);
-}
+    // ✅ Best effort: refresh TMDb casts/director (overwrite old manual casts)
+    try {
+      await ensureMovieTmdbCredits(movie, {
+        force: identityChanged,
+        castLimit: 20
+      });
+    } catch (e) {
+      console.warn('[tmdb] update sync skipped:', e?.message || e);
+    }
 
     const updatedMovie = await movie.save();
     try {
-  await afterMovieMutation({
-    action: 'update',
-    before: beforeIndexing,
-    after: updatedMovie,
+      await afterMovieMutation({
+        action: 'update',
+        before: beforeIndexing,
+        after: updatedMovie,
       });
     } catch (e) {
       console.warn('[indexing] updateMovie:', e?.message || e);
@@ -794,20 +949,20 @@ const deleteMovie = asyncHandler(async (req, res) => {
     const movie = await Movie.findById(req.params.id);
     if (movie) {
       const beforeIndexing = {
-    _id: movie._id,
-    slug: movie.slug,
-    isPublished: movie.isPublished,
-    latestNew: movie.latestNew,
-    banner: movie.banner,
-    latest: movie.latest,
-    previousHit: movie.previousHit,
-  };
+        _id: movie._id,
+        slug: movie.slug,
+        isPublished: movie.isPublished,
+        latestNew: movie.latestNew,
+        banner: movie.banner,
+        latest: movie.latest,
+        previousHit: movie.previousHit,
+      };
       await movie.deleteOne();
       try {
-    await afterMovieMutation({ action: 'delete', before: beforeIndexing });
-  } catch (e) {
-    console.warn('[indexing] deleteMovie:', e?.message || e);
-  }
+        await afterMovieMutation({ action: 'delete', before: beforeIndexing });
+      } catch (e) {
+        console.warn('[indexing] deleteMovie:', e?.message || e);
+      }
       res.json({ message: 'Movie removed' });
     } else {
       res.status(404);
@@ -848,7 +1003,7 @@ const createMovie = asyncHandler(async (req, res) => {
       video,
       videoUrl2,
       videoUrl3, // ✅ NEW (Q1)
-     videoUrl7, // ✅ NEW (Q1): optional extra server (Server 1 when present) 
+      videoUrl7, // ✅ NEW (Q1): optional extra server (Server 1 when present) 
       episodes,
       casts,
       director,
@@ -1024,11 +1179,11 @@ const createMovie = asyncHandler(async (req, res) => {
     const movie = new Movie(movieData);
     const createdMovie = await movie.save();
     // ✅ Revalidate Next ISR + IndexNow (best effort)
-try {
-  await afterMovieMutation({ action: 'create', after: createdMovie });
-} catch (e) {
-  console.warn('[indexing] createMovie:', e?.message || e);
-}
+    try {
+      await afterMovieMutation({ action: 'create', after: createdMovie });
+    } catch (e) {
+      console.warn('[indexing] createMovie:', e?.message || e);
+    }
     res.status(201).json(createdMovie);
   } catch (error) {
     res
@@ -1269,10 +1424,10 @@ const generateSitemap = asyncHandler(async (req, res) => {
         const encoded = encodeURIComponent(
           'https://www.moviefrost.com/sitemap.xml'
         );
-        fetch('https://www.google.com/ping?sitemap=' + encoded).catch(() => {});
-        fetch('https://www.bing.com/ping?sitemap=' + encoded).catch(() => {});
+        fetch('https://www.google.com/ping?sitemap=' + encoded).catch(() => { });
+        fetch('https://www.bing.com/ping?sitemap=' + encoded).catch(() => { });
       }
-    } catch (_) {}
+    } catch (_) { }
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -1308,7 +1463,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'seoDescription',
     'seoKeywords',
     'trailerUrl',
-     'faqs',
+    'faqs',
     'latest',
     'previousHit',
     'isPublished',
@@ -1347,15 +1502,15 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
       allowedCommon.forEach((field) => {
         if (field in item && field !== 'type') {
           if (field === 'trailerUrl') {
-      updateSet.trailerUrl =
-        normalizeTrailerUrl(item.trailerUrl);
-    } else if (field === 'faqs') {
-      updateSet.faqs = normalizeFaqs(item.faqs);
-      } else if (field === 'videoUrl7') {
-      updateSet.videoUrl7 = String(item.videoUrl7 || '').trim();
-    } else {
-      updateSet[field] = item[field];
-    }
+            updateSet.trailerUrl =
+              normalizeTrailerUrl(item.trailerUrl);
+          } else if (field === 'faqs') {
+            updateSet.faqs = normalizeFaqs(item.faqs);
+          } else if (field === 'videoUrl7') {
+            updateSet.videoUrl7 = String(item.videoUrl7 || '').trim();
+          } else {
+            updateSet[field] = item[field];
+          }
         }
       });
 
@@ -1426,10 +1581,10 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
   const result = await Movie.bulkWrite(operations, { ordered: false });
 
   // ✅ Make Next.js show updates instantly (ISR cache purge)
- const revalidateResult = await revalidateFrontend({
-   tags: ['movies', 'home'],
-   paths: ['/', '/movies'],
- });
+  const revalidateResult = await revalidateFrontend({
+    tags: ['movies', 'home'],
+    paths: ['/', '/movies'],
+  });
 
   res.status(200).json({
     message: 'Bulk exact update executed',
@@ -1602,7 +1757,7 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         seoDescription: seoDescription || desc.substring(0, 155),
         seoKeywords:
           seoKeywords || `${name}, ${category}, ${language} movies`,
-          trailerUrl: normalizeTrailerUrl(trailerUrl) ?? '',
+        trailerUrl: normalizeTrailerUrl(trailerUrl) ?? '',
         faqs: normalizeFaqs(faqs) ?? [],
         viewCount: 0,
         latest: !!latest,
@@ -1656,28 +1811,28 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
   });
 
   try {
-  const published = insertedMovies.filter((m) => m?.isPublished !== false);
+    const published = insertedMovies.filter((m) => m?.isPublished !== false);
 
-  if (published.length) {
-    // 1) Revalidate list/home once (movie pages are new so no need to revalidate each)
-    const { isFrontendRevalidateEnabled, revalidateFrontend } = await import(
-      '../utils/frontendRevalidateService.js'
-    );
+    if (published.length) {
+      // 1) Revalidate list/home once (movie pages are new so no need to revalidate each)
+      const { isFrontendRevalidateEnabled, revalidateFrontend } = await import(
+        '../utils/frontendRevalidateService.js'
+      );
 
-    if (isFrontendRevalidateEnabled()) {
-      await revalidateFrontend({
-        tags: ['movies', 'home'],
-        paths: ['/', '/movies'],
-      });
+      if (isFrontendRevalidateEnabled()) {
+        await revalidateFrontend({
+          tags: ['movies', 'home'],
+          paths: ['/', '/movies'],
+        });
+      }
+
+      // 2) Ping IndexNow for all new pages (one request, chunked if needed)
+      const urls = published.flatMap((m) => buildMoviePublicUrls(m));
+      await notifyIndexNow(urls);
     }
-
-    // 2) Ping IndexNow for all new pages (one request, chunked if needed)
-    const urls = published.flatMap((m) => buildMoviePublicUrls(m));
-    await notifyIndexNow(urls);
+  } catch (e) {
+    console.warn('[indexing] bulkCreateMovies:', e?.message || e);
   }
-} catch (e) {
-  console.warn('[indexing] bulkCreateMovies:', e?.message || e);
-}
   res.status(201).json({
     message: 'Bulk create executed',
     insertedCount: insertedMovies.length,
@@ -1733,9 +1888,9 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
   const browseByList =
     browseByRaw && String(browseByRaw).trim()
       ? String(browseByRaw)
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
       : [];
 
   const baseFilter = {
