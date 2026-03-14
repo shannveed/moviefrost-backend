@@ -47,14 +47,14 @@ const findMovieByIdOrSlugLean = async (param, extraFilter = {}) => {
   // Try ObjectId first
   if (isValidObjectId(p)) {
     const byId = await Movie.findOne({ _id: p, ...extraFilter })
-      .select('_id slug reviews')
+      .select('_id slug reviews rate numberOfReviews')
       .lean();
     if (byId) return byId;
   }
 
   // Fallback to slug
   return Movie.findOne({ slug: p, ...extraFilter })
-    .select('_id slug reviews')
+    .select('_id slug reviews rate numberOfReviews')
     .lean();
 };
 
@@ -135,21 +135,21 @@ const GUEST_AVATAR = '/images/placeholder.jpg';
 
 // You can expand these lists anytime (more variety = fewer duplicates)
 const FIRST_NAMES = [
-  'Harry','Jennifer','Matthew','Anna','Olivia','Emma','Ava','Sophia','Mia','Amelia',
-  'Charlotte','Evelyn','Abigail','Emily','Ella','Grace','Chloe','Lily','Hannah','Zoe',
-  'Noah','Liam','James','Benjamin','Lucas','Henry','Alexander','William','Daniel','Michael',
-  'Ethan','Jacob','Logan','Jackson','Sebastian','Jack','Aiden','Owen','Samuel','Joseph',
-  'Levi','David','Wyatt','Luke','Isaac','Gabriel','Anthony','Dylan','Leo','Ryan',
-  'Arjun','Rohan','Neha','Aisha','Sara','Fatima','Maya','Nadia','Leila','Isha',
+  'Harry', 'Jennifer', 'Matthew', 'Anna', 'Olivia', 'Emma', 'Ava', 'Sophia', 'Mia', 'Amelia',
+  'Charlotte', 'Evelyn', 'Abigail', 'Emily', 'Ella', 'Grace', 'Chloe', 'Lily', 'Hannah', 'Zoe',
+  'Noah', 'Liam', 'James', 'Benjamin', 'Lucas', 'Henry', 'Alexander', 'William', 'Daniel', 'Michael',
+  'Ethan', 'Jacob', 'Logan', 'Jackson', 'Sebastian', 'Jack', 'Aiden', 'Owen', 'Samuel', 'Joseph',
+  'Levi', 'David', 'Wyatt', 'Luke', 'Isaac', 'Gabriel', 'Anthony', 'Dylan', 'Leo', 'Ryan',
+  'Arjun', 'Rohan', 'Neha', 'Aisha', 'Sara', 'Fatima', 'Maya', 'Nadia', 'Leila', 'Isha',
 ];
 
 const LAST_NAMES = [
-  'Smith','Johnson','Williams','Brown','Jones','Miller','Davis','Garcia','Rodriguez','Wilson',
-  'Martinez','Anderson','Taylor','Thomas','Hernandez','Moore','Martin','Jackson','Thompson','White',
-  'Lopez','Lee','Gonzalez','Harris','Clark','Lewis','Robinson','Walker','Perez','Hall',
-  'Young','Allen','Sanchez','Wright','King','Scott','Green','Baker','Adams','Nelson',
-  'Hill','Ramirez','Campbell','Mitchell','Roberts','Carter','Phillips','Evans','Turner','Parker',
-  'Collins','Edwards','Stewart','Flores','Morris','Nguyen','Murphy','Rivera','Cook','Rogers',
+  'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Miller', 'Davis', 'Garcia', 'Rodriguez', 'Wilson',
+  'Martinez', 'Anderson', 'Taylor', 'Thomas', 'Hernandez', 'Moore', 'Martin', 'Jackson', 'Thompson', 'White',
+  'Lopez', 'Lee', 'Gonzalez', 'Harris', 'Clark', 'Lewis', 'Robinson', 'Walker', 'Perez', 'Hall',
+  'Young', 'Allen', 'Sanchez', 'Wright', 'King', 'Scott', 'Green', 'Baker', 'Adams', 'Nelson',
+  'Hill', 'Ramirez', 'Campbell', 'Mitchell', 'Roberts', 'Carter', 'Phillips', 'Evans', 'Turner', 'Parker',
+  'Collins', 'Edwards', 'Stewart', 'Flores', 'Morris', 'Nguyen', 'Murphy', 'Rivera', 'Cook', 'Rogers',
 ];
 
 const MIDDLE_INITIALS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((c) => `${c}.`);
@@ -207,6 +207,48 @@ const shapeUserForResponse = (ratingRow) => {
   return null;
 };
 
+const toFiniteNumber = (value, fallback = 0) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const almostEqual = (a, b, epsilon = 1e-8) => Math.abs(a - b) <= epsilon;
+
+/**
+ * IMPORTANT:
+ * This is used ONLY from GET/read routes.
+ * It keeps Movie.rate / Movie.numberOfReviews in sync
+ * WITHOUT touching Movie.updatedAt.
+ */
+const syncMovieAggregateReadOnly = async (movieDoc, aggregate) => {
+  if (!movieDoc?._id) return { updated: false, reason: 'no_movie' };
+
+  const nextRate = toFiniteNumber(aggregate?.avg, 0);
+  const nextCount = Math.max(0, Math.round(toFiniteNumber(aggregate?.count, 0)));
+
+  const prevRate = toFiniteNumber(movieDoc?.rate, 0);
+  const prevCount = Math.max(
+    0,
+    Math.round(toFiniteNumber(movieDoc?.numberOfReviews, 0))
+  );
+
+  if (almostEqual(prevRate, nextRate) && prevCount === nextCount) {
+    return { updated: false, reason: 'unchanged' };
+  }
+
+  await Movie.collection.updateOne(
+    { _id: movieDoc._id },
+    {
+      $set: {
+        rate: nextRate,
+        numberOfReviews: nextCount,
+      },
+    }
+  );
+
+  return { updated: true };
+};
+
 /**
  * PRIVATE
  * POST /api/movies/:id/ratings
@@ -259,10 +301,10 @@ export const upsertMovieRating = asyncHandler(async (req, res) => {
       updatedAt: doc?.updatedAt,
       user: doc?.userId
         ? {
-            _id: doc.userId._id,
-            fullName: doc.userId.fullName,
-            image: doc.userId.image,
-          }
+          _id: doc.userId._id,
+          fullName: doc.userId.fullName,
+          image: doc.userId.image,
+        }
         : null,
     },
     aggregate,
@@ -380,11 +422,9 @@ export const getMovieRatings = asyncHandler(async (req, res) => {
     computeAggregate(movie._id),
   ]);
 
-  // Best-effort keep Movie in sync (don’t block response if it fails)
-  Movie.updateOne(
-    { _id: movie._id },
-    { $set: { rate: aggregate.avg, numberOfReviews: aggregate.count } }
-  ).catch(() => {});
+  // Best-effort keep Movie in sync WITHOUT touching updatedAt,
+  // because this is a GET/read route.
+  syncMovieAggregateReadOnly(movie, aggregate).catch(() => { });
 
   res.json({
     movieId: movie._id,
@@ -427,11 +467,11 @@ export const getMyMovieRating = asyncHandler(async (req, res) => {
   res.json({
     rating: doc
       ? {
-          rating: doc.rating,
-          comment: doc.comment || '',
-          createdAt: doc.createdAt,
-          updatedAt: doc.updatedAt,
-        }
+        rating: doc.rating,
+        comment: doc.comment || '',
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt,
+      }
       : null,
   });
 });
@@ -469,7 +509,7 @@ export const deleteMovieRatingAdmin = asyncHandler(async (req, res) => {
     await Movie.updateOne(
       { _id: movie._id },
       { $pull: { reviews: { userId: rating.userId } } }
-    ).catch(() => {});
+    ).catch(() => { });
   }
 
   const aggregate = await computeAggregate(movie._id);

@@ -218,8 +218,12 @@ const persistReadPathSideEffectsAndView = async (movie, beforeSnapshot) => {
     update.$set = buildReadPathPersistSet(movie);
   }
 
-  await Movie.updateOne({ _id: movie._id }, update, { timestamps: false });
+  // IMPORTANT:
+  // Use the native MongoDB collection update here so Mongoose timestamps
+  // can NEVER bump updatedAt on read-only page views.
+  await Movie.collection.updateOne({ _id: movie._id }, update);
 };
+
 
 
 
