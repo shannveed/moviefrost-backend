@@ -3,6 +3,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const OMDB_API_KEY = process.env.OMDB_API_KEY || '';
+export const isExternalRatingsEnabled = () => !!OMDB_API_KEY;
+
 const TTL_DAYS = Number(process.env.EXTERNAL_RATINGS_TTL_DAYS || 7);
 
 const OMDB_BASE = 'https://www.omdbapi.com/';
@@ -110,8 +112,14 @@ const buildOmdbUrl = ({ imdbId, title, year, type, includeYear = true }) => {
   return `${OMDB_BASE}?${p.toString()}`;
 };
 
-// ✅ NEW: OMDb "search" fallback (s=) when exact title fails
-const buildOmdbSearchUrl = ({ title, year, type, includeYear = true, page = 1 }) => {
+// OMDb "search" fallback (s=) when exact title fails
+const buildOmdbSearchUrl = ({
+  title,
+  year,
+  type,
+  includeYear = true,
+  page = 1,
+}) => {
   const p = new URLSearchParams();
   p.set('apikey', OMDB_API_KEY);
 
@@ -194,11 +202,16 @@ const tryFetchJson = async (url) => {
  * Updates movieDoc.externalRatings (IMDb + RottenTomatoes) if stale/missing.
  * Never throws fatally (call inside try/catch anyway).
  */
-export const ensureMovieExternalRatings = async (movieDoc) => {
+export const ensureMovieExternalRatings = async (
+  movieDoc,
+  { force = false } = {}
+) => {
   if (!movieDoc) return { updated: false, reason: 'no_movie' };
   if (!OMDB_API_KEY) return { updated: false, reason: 'missing_omdb_key' };
 
-  if (!shouldRefresh(movieDoc)) return { updated: false, reason: 'fresh' };
+  if (!force && !shouldRefresh(movieDoc)) {
+    return { updated: false, reason: 'fresh' };
+  }
 
   const title = movieDoc?.name;
   const year = movieDoc?.year;
@@ -243,11 +256,23 @@ export const ensureMovieExternalRatings = async (movieDoc) => {
     lastError = r.error || lastError;
   }
 
-  // 2) ✅ NEW: fallback search if title lookup failed (only when imdbId is not set)
+  // 2) fallback search if title lookup failed (only when imdbId is not set)
   if (!data && !imdbId && title) {
     const searchUrls = [
-      buildOmdbSearchUrl({ title, year, type: omdbType, includeYear: true, page: 1 }),
-      buildOmdbSearchUrl({ title, year, type: omdbType, includeYear: false, page: 1 }),
+      buildOmdbSearchUrl({
+        title,
+        year,
+        type: omdbType,
+        includeYear: true,
+        page: 1,
+      }),
+      buildOmdbSearchUrl({
+        title,
+        year,
+        type: omdbType,
+        includeYear: false,
+        page: 1,
+      }),
     ];
 
     for (const sUrl of searchUrls) {

@@ -5,7 +5,7 @@ import Categories from '../Models/CategoriesModel.js';
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import { notifyIndexNow, buildMoviePublicUrls } from '../utils/indexNowService.js';
-import { ensureMovieTmdbCredits, fetchTmdbCreditsForMovie } from '../utils/tmdbService.js';
+import { ensureMovieTmdbCredits } from '../utils/tmdbService.js';
 import { ensureMovieExternalRatings } from '../utils/externalRatingsService.js';
 import { revalidateFrontend } from '../utils/frontendRevalidateService.js';
 import { afterMovieMutation } from '../utils/movieIndexing.js';
@@ -14,6 +14,8 @@ import { slugify } from '../utils/slugify.js';
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
 const MAX_FAQS = 5;
+const BULK_METADATA_SYNC_CONCURRENCY = 4;
+const TMDB_CAST_LIMIT = 20;
 
 // Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
@@ -38,8 +40,7 @@ const buildStartsWithRegex = (value) => {
   return new RegExp(`^${escapeRegex(term)}`, 'i');
 };
 
-// ✅ NEW: allow filtering by type via query (?type=Movie|WebSeries)
-// Backwards compatible: invalid/empty type is ignored.
+// allow filtering by type via query (?type=Movie|WebSeries)
 const normalizeTypeParam = (value) => {
   const v = String(value || '').trim();
   if (!v) return null;
@@ -83,7 +84,6 @@ const generateUniqueSlug = async (name, year, existingId = null) => {
   let slug = baseSlug;
   let counter = 2;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const query = { slug };
     if (existingId) query._id = { $ne: existingId };
@@ -218,14 +218,8 @@ const persistReadPathSideEffectsAndView = async (movie, beforeSnapshot) => {
     update.$set = buildReadPathPersistSet(movie);
   }
 
-  // IMPORTANT:
-  // Use the native MongoDB collection update here so Mongoose timestamps
-  // can NEVER bump updatedAt on read-only page views.
   await Movie.collection.updateOne({ _id: movie._id }, update);
 };
-
-
-
 
 // Find movie by id or slug, optionally with extra filter
 const findMovieByIdOrSlug = async (param, extraFilter = {}) => {
@@ -284,8 +278,85 @@ const clampLimit = (value, fallback = LATEST_NEW_LIMIT, max = 200) => {
   return Math.min(n, max);
 };
 
+const resetThirdPartyMetadata = (movieLike) => {
+  if (!movieLike) return;
+
+  movieLike.tmdbCreditsUpdatedAt = null;
+  movieLike.tmdbId = null;
+  movieLike.tmdbType = '';
+
+  movieLike.externalRatingsUpdatedAt = null;
+  movieLike.externalRatings = {
+    imdb: { rating: null, votes: null, url: '' },
+    rottenTomatoes: { rating: null, url: '' },
+  };
+};
+
+const getMovieIdentitySnapshot = (movieLike) => ({
+  type: String(movieLike?.type || '').trim(),
+  name: String(movieLike?.name || '').trim(),
+  year: Number(movieLike?.year) || 0,
+  imdbId: String(movieLike?.imdbId || '').trim(),
+});
+
+const movieIdentityChanged = (before, after) => {
+  if (!before && after) return true;
+  if (!after) return false;
+
+  return (
+    String(before?.type || '') !== String(after?.type || '') ||
+    String(before?.name || '') !== String(after?.name || '') ||
+    Number(before?.year || 0) !== Number(after?.year || 0) ||
+    String(before?.imdbId || '') !== String(after?.imdbId || '')
+  );
+};
+
+const runInBatches = async (
+  items = [],
+  batchSize = BULK_METADATA_SYNC_CONCURRENCY,
+  worker = async () => { }
+) => {
+  const size = Math.max(1, Number(batchSize) || 1);
+
+  for (let i = 0; i < items.length; i += size) {
+    const batch = items.slice(i, i + size);
+    await Promise.all(batch.map((item) => worker(item)));
+  }
+};
+
+const syncMovieMetadataBestEffort = async (
+  movieLike,
+  {
+    forceExternalRatings = false,
+    forceTmdb = false,
+    castLimit = TMDB_CAST_LIMIT,
+  } = {}
+) => {
+  if (!movieLike) return;
+
+  // OMDb first so a discovered IMDb ID can improve TMDb matching
+  try {
+    await ensureMovieExternalRatings(movieLike, {
+      force: forceExternalRatings,
+    });
+  } catch (e) {
+    console.warn('[externalRatings] sync skipped:', e?.message || e);
+  }
+
+  try {
+    await ensureMovieTmdbCredits(movieLike, {
+      force: forceTmdb,
+      castLimit,
+    });
+  } catch (e) {
+    console.warn('[tmdb] sync skipped:', e?.message || e);
+  }
+
+  syncReadPathDerivedFields(movieLike);
+};
+
 /* ============================================================
-   ✅ Q1: Trailer  FAQ normalization (optional fields)
+   Trailer / FAQ normalization
    ============================================================ */
 const normalizeTrailerUrl = (value) => {
   if (value === undefined) return undefined;
@@ -327,15 +398,7 @@ const normalizeFaqs = (faqs) => {
 };
 
 /**
- * ✅ NEW (Q1): Normalize + validate WebSeries episodes for:
- * - seasonNumber support
- * - 3 servers per episode (video, videoUrl2, videoUrl3)
- *
- * Notes:
- * - Backwards compatible: we ONLY normalize when episodes are provided
- *   (create/bulkCreate always provides; update only if episodes present).
- * - Old docs missing seasonNumber default to 1 on frontend; here we default to 1
- *   when missing in payload.
+ * Normalize + validate WebSeries episodes
  */
 const normalizeWebSeriesEpisodes = (episodes) => {
   if (!Array.isArray(episodes) || episodes.length === 0) {
@@ -381,16 +444,12 @@ const normalizeWebSeriesEpisodes = (episodes) => {
     }
 
     return {
-      // keep subdoc _id if the client sent it (EditMovie typically does)
       ...(ep?._id ? { _id: ep._id } : {}),
-
       seasonNumber,
       episodeNumber,
       title: typeof ep?.title === 'string' ? ep.title : '',
       desc: ep?.desc,
       duration: ep?.duration,
-
-      // 3 servers
       video: video1,
       videoUrl2: video2,
       videoUrl3: video3,
@@ -414,10 +473,9 @@ const getMovies = asyncHandler(async (req, res) => {
     const { category, time, language, rate, year, search, browseBy, type } = req.query;
     const typeFilter = normalizeTypeParam(type);
 
-    // ✅ starts-with search only
     const searchRegex = buildStartsWithRegex(search);
 
-    let baseFilter = {
+    const baseFilter = {
       ...publicVisibilityFilter,
       ...(typeFilter && { type: typeFilter }),
       ...(category && { category }),
@@ -425,7 +483,8 @@ const getMovies = asyncHandler(async (req, res) => {
       ...(language && { language }),
       ...(rate && { rate }),
       ...(year && { year }),
-      ...(browseBy && browseBy.trim() !== '' && {
+      ...(browseBy &&
+        browseBy.trim() !== '' && {
         browseBy: { $in: browseBy.split(',') },
       }),
       ...(searchRegex && { name: searchRegex }),
@@ -442,8 +501,7 @@ const getMovies = asyncHandler(async (req, res) => {
     const sortPrevHits = { orderIndex: 1, createdAt: -1 };
 
     const normalCount = await Movie.countDocuments(normalFilter);
-    const totalCount =
-      normalCount + (await Movie.countDocuments(prevHitFilter));
+    const totalCount = normalCount + (await Movie.countDocuments(prevHitFilter));
 
     let movies = [];
 
@@ -492,17 +550,17 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
     const { category, time, language, rate, year, search, browseBy, type } = req.query;
 
     const typeFilter = normalizeTypeParam(type);
-
     const searchRegex = buildStartsWithRegex(search);
 
-    let baseFilter = {
+    const baseFilter = {
       ...(typeFilter && { type: typeFilter }),
       ...(category && { category }),
       ...(time && { time }),
       ...(language && { language }),
       ...(rate && { rate }),
       ...(year && { year }),
-      ...(browseBy && browseBy.trim() !== '' && {
+      ...(browseBy &&
+        browseBy.trim() !== '' && {
         browseBy: { $in: browseBy.split(',') },
       }),
       ...(searchRegex && { name: searchRegex }),
@@ -519,8 +577,7 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
     const sortPrevHits = { orderIndex: 1, createdAt: -1 };
 
     const normalCount = await Movie.countDocuments(normalFilter);
-    const totalCount =
-      normalCount + (await Movie.countDocuments(prevHitFilter));
+    const totalCount = normalCount + (await Movie.countDocuments(prevHitFilter));
 
     let movies = [];
 
@@ -573,7 +630,7 @@ const getMovieById = asyncHandler(async (req, res) => {
     throw new Error('Movie not found');
   }
 
-  // Snapshot BEFORE GET-time mutations so we can persist only side effects
+  // Snapshot BEFORE read-path mutations so we can persist only local side effects
   // without changing updatedAt.
   const beforeSnapshot = getReadPathSideEffectsSnapshot(movie);
 
@@ -585,25 +642,12 @@ const getMovieById = asyncHandler(async (req, res) => {
     movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
   }
 
-  // ✅ External ratings (IMDb/RT) — best effort, cached
-  try {
-    await ensureMovieExternalRatings(movie);
-  } catch (e) {
-    console.warn('[externalRatings] skipped:', e?.message || e);
-  }
-
-  // ✅ TMDb casts/director — best effort, cached
-  try {
-    await ensureMovieTmdbCredits(movie);
-  } catch (e) {
-    console.warn('[tmdb] credits skipped:', e?.message || e);
-  }
-
-  // Keep response behavior same
+  // IMPORTANT:
+  // No OMDb/TMDb refreshes on public GET requests.
+  // Third-party metadata must be precomputed on create/update
+  // or synced via admin/manual jobs.
   movie.viewCount = Number(movie.viewCount || 0) + 1;
 
-  // Persist view count + GET-side cache/backfill fields
-  // WITHOUT touching updatedAt.
   try {
     await persistReadPathSideEffectsAndView(movie, beforeSnapshot);
   } catch (e) {
@@ -612,7 +656,6 @@ const getMovieById = asyncHandler(async (req, res) => {
 
   res.json(movie);
 });
-
 
 // ADMIN: get movie by id/slug (includes drafts)
 const getMovieByIdAdmin = asyncHandler(async (req, res) => {
@@ -624,7 +667,7 @@ const getMovieByIdAdmin = asyncHandler(async (req, res) => {
     throw new Error('Movie not found');
   }
 
-  // Snapshot BEFORE GET-time mutations so we can persist only side effects
+  // Snapshot BEFORE read-path mutations so we can persist only local side effects
   // without changing updatedAt.
   const beforeSnapshot = getReadPathSideEffectsSnapshot(movie);
 
@@ -636,25 +679,11 @@ const getMovieByIdAdmin = asyncHandler(async (req, res) => {
     movie.slug = await generateUniqueSlug(movie.name, slugYear, movie._id);
   }
 
-  // ✅ External ratings (IMDb/RT) — best effort, cached
-  try {
-    await ensureMovieExternalRatings(movie);
-  } catch (e) {
-    console.warn('[externalRatings] skipped:', e?.message || e);
-  }
-
-  // ✅ TMDb casts/director — best effort, cached
-  try {
-    await ensureMovieTmdbCredits(movie);
-  } catch (e) {
-    console.warn('[tmdb] credits skipped:', e?.message || e);
-  }
-
-  // Keep response behavior same
+  // IMPORTANT:
+  // No OMDb/TMDb refreshes on admin GET either.
+  // Use create/update flows or admin sync endpoints instead.
   movie.viewCount = Number(movie.viewCount || 0) + 1;
 
-  // Persist view count + GET-side cache/backfill fields
-  // WITHOUT touching updatedAt.
   try {
     await persistReadPathSideEffectsAndView(movie, beforeSnapshot);
   } catch (e) {
@@ -663,7 +692,6 @@ const getMovieByIdAdmin = asyncHandler(async (req, res) => {
 
   res.json(movie);
 });
-
 
 // PUBLIC: top rated (only published)
 const getTopRatedMovies = asyncHandler(async (req, res) => {
@@ -760,8 +788,8 @@ const updateMovie = asyncHandler(async (req, res) => {
       year,
       video,
       videoUrl2,
-      videoUrl3, // ✅ NEW (Q1)
-      videoUrl7, // ✅ NEW (Q1): optional extra server (Server 1 when present)
+      videoUrl3,
+      videoUrl7,
       episodes,
       casts,
       director,
@@ -783,6 +811,7 @@ const updateMovie = asyncHandler(async (req, res) => {
       res.status(404);
       throw new Error('Movie not found');
     }
+
     const beforeIndexing = {
       _id: movie._id,
       slug: movie.slug,
@@ -823,7 +852,7 @@ const updateMovie = asyncHandler(async (req, res) => {
     movie.time = time || movie.time;
     movie.language = language || movie.language;
     movie.year = year || movie.year;
-    // ✅ NEW (Q1): optional extra server (works for Movie + WebSeries)
+
     if (videoUrl7 !== undefined) {
       movie.videoUrl7 = String(videoUrl7 || '').trim();
     }
@@ -841,23 +870,14 @@ const updateMovie = asyncHandler(async (req, res) => {
       String(movie.imdbId || '').trim() !== originalImdbId;
 
     if (identityChanged) {
-      movie.tmdbCreditsUpdatedAt = null;
-      movie.tmdbId = null;
-      movie.tmdbType = '';
-    }
-
-    if (identityChanged) {
-      // Force refresh of external ratings when name/year/imdbId changes
-      movie.externalRatingsUpdatedAt = null;
-      movie.externalRatings = {
-        imdb: { rating: null, votes: null, url: '' },
-        rottenTomatoes: { rating: null, url: '' },
-      };
+      // Force fresh OMDb + TMDb metadata when title identity changes
+      resetThirdPartyMetadata(movie);
     }
 
     movie.seoTitle = seoTitle || movie.seoTitle;
     movie.seoDescription = seoDescription || movie.seoDescription;
     movie.seoKeywords = seoKeywords || movie.seoKeywords;
+
     const normalizedTrailer = normalizeTrailerUrl(trailerUrl);
     if (normalizedTrailer !== undefined) {
       movie.trailerUrl = normalizedTrailer;
@@ -867,11 +887,11 @@ const updateMovie = asyncHandler(async (req, res) => {
     if (normalizedFaqs !== undefined) {
       movie.faqs = normalizedFaqs;
     }
+
     movie.latest = latest !== undefined ? !!latest : movie.latest;
     movie.previousHit =
       previousHit !== undefined ? !!previousHit : movie.previousHit;
 
-    // toggle visibility
     if (isPublished !== undefined) {
       movie.isPublished = !!isPublished;
     }
@@ -879,19 +899,18 @@ const updateMovie = asyncHandler(async (req, res) => {
     if (type === 'Movie') {
       movie.video = video || movie.video;
       movie.videoUrl2 = videoUrl2 || movie.videoUrl2;
-      movie.videoUrl3 = videoUrl3 || movie.videoUrl3; // ✅ NEW (Q1)
+      movie.videoUrl3 = videoUrl3 || movie.videoUrl3;
       movie.downloadUrl =
         downloadUrl !== undefined ? downloadUrl : movie.downloadUrl;
       movie.episodes = undefined;
     } else if (type === 'WebSeries') {
-      // ✅ NEW (Q1): normalize episodes ONLY if provided
       if (episodes !== undefined) {
         movie.episodes = normalizeWebSeriesEpisodes(episodes);
       }
       movie.video = undefined;
       movie.downloadUrl = undefined;
       movie.videoUrl2 = undefined;
-      movie.videoUrl3 = undefined; // ✅ NEW (Q1)
+      movie.videoUrl3 = undefined;
     } else if (type) {
       res.status(400);
       throw new Error('Invalid type specified for update');
@@ -913,7 +932,7 @@ const updateMovie = asyncHandler(async (req, res) => {
     // Best effort: refresh external ratings immediately so Movie page shows it right away
     if (identityChanged) {
       try {
-        await ensureMovieExternalRatings(movie);
+        await ensureMovieExternalRatings(movie, { force: true });
       } catch (e) {
         console.warn(
           '[externalRatings] update refresh skipped:',
@@ -921,17 +940,19 @@ const updateMovie = asyncHandler(async (req, res) => {
         );
       }
     }
-    // ✅ Best effort: refresh TMDb casts/director (overwrite old manual casts)
+
+    // Best effort: refresh TMDb casts/director
     try {
       await ensureMovieTmdbCredits(movie, {
         force: identityChanged,
-        castLimit: 20
+        castLimit: TMDB_CAST_LIMIT,
       });
     } catch (e) {
       console.warn('[tmdb] update sync skipped:', e?.message || e);
     }
 
     const updatedMovie = await movie.save();
+
     try {
       await afterMovieMutation({
         action: 'update',
@@ -941,6 +962,7 @@ const updateMovie = asyncHandler(async (req, res) => {
     } catch (e) {
       console.warn('[indexing] updateMovie:', e?.message || e);
     }
+
     res.status(201).json(updatedMovie);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -1006,12 +1028,12 @@ const createMovie = asyncHandler(async (req, res) => {
       year,
       video,
       videoUrl2,
-      videoUrl3, // ✅ NEW (Q1)
-      videoUrl7, // ✅ NEW (Q1): optional extra server (Server 1 when present) 
+      videoUrl3,
+      videoUrl7,
       episodes,
       casts,
       director,
-      imdbId, // ✅ PATCH
+      imdbId,
       downloadUrl,
       seoTitle,
       seoDescription,
@@ -1044,7 +1066,6 @@ const createMovie = asyncHandler(async (req, res) => {
       throw new Error('Movie cannot be both Latest and PreviousHit');
     }
 
-    // Decide initial orderIndex
     let newOrderIndex;
 
     if (previousHit) {
@@ -1149,45 +1170,23 @@ const createMovie = asyncHandler(async (req, res) => {
       throw new Error('Invalid type');
     }
 
-    // ✅ Auto-sync casts/director from TMDb (overwrites any existing casts)
-    try {
-      const tmdb = await fetchTmdbCreditsForMovie({
-        type,
-        name,
-        year: numericYear || year,
-        imdbId: String(imdbId || '').trim(),
-        tmdbId: null,
-        castLimit: 20,
-      });
-
-      if (tmdb?.enabled) {
-        movieData.tmdbCreditsUpdatedAt = new Date();
-      }
-
-      if (tmdb?.found && tmdb?.tmdbId) {
-        movieData.tmdbId = tmdb.tmdbId;
-        movieData.tmdbType = tmdb.tmdbType;
-      }
-
-      movieData.casts =
-        Array.isArray(tmdb?.casts) && tmdb.casts.length ? tmdb.casts : [];
-
-      if (tmdb?.director) {
-        movieData.director = tmdb.director;
-      }
-    } catch (e) {
-      console.warn('[tmdb] createMovie sync failed:', e?.message || e);
-    }
-
+    // Precompute OMDb + TMDb here (admin path only)
+    // Never do this on public movie/watch GET requests.
+    await syncMovieMetadataBestEffort(movieData, {
+      forceExternalRatings: true,
+      forceTmdb: true,
+      castLimit: TMDB_CAST_LIMIT,
+    });
 
     const movie = new Movie(movieData);
     const createdMovie = await movie.save();
-    // ✅ Revalidate Next ISR + IndexNow (best effort)
+
     try {
       await afterMovieMutation({ action: 'create', after: createdMovie });
     } catch (e) {
       console.warn('[indexing] createMovie:', e?.message || e);
     }
+
     res.status(201).json(createdMovie);
   } catch (error) {
     res
@@ -1208,10 +1207,6 @@ const getLatestMovies = asyncHandler(async (_req, res) => {
     res.status(400).json({ message: error.message });
   }
 });
-
-/* ================================================================== */
-/* ✅ NEW: "Latest New" list for HomeScreen                            */
-/* ================================================================== */
 
 // PUBLIC: latestNew (only published)
 const getLatestNewMovies = asyncHandler(async (req, res) => {
@@ -1256,7 +1251,7 @@ const getLatestNewMoviesAdmin = asyncHandler(async (req, res) => {
   }
 });
 
-// ADMIN: set/unset latestNew flag (does NOT affect Movies page ordering)
+// ADMIN: set/unset latestNew flag
 const setLatestNewMovies = asyncHandler(async (req, res) => {
   try {
     const { movieIds, value = true } = req.body || {};
@@ -1461,8 +1456,8 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'numberOfReviews',
     'casts',
     'director',
-    'imdbId', // ✅ PATCH
-    'videoUrl7', // ✅ NEW (Q1)
+    'imdbId',
+    'videoUrl7',
     'seoTitle',
     'seoDescription',
     'seoKeywords',
@@ -1475,12 +1470,15 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     'slug',
   ];
 
-  // ✅ NEW (Q1): include videoUrl3 for Movie
   const allowedMovieOnly = ['video', 'videoUrl2', 'videoUrl3', 'downloadUrl'];
   const allowedWebOnly = ['episodes'];
 
   const operations = [];
   const errors = [];
+
+  // For accurate identity-changed detection when _id is supplied
+  const compareIds = new Set();
+  const fallbackSyncFilters = [];
 
   for (let i = 0; i < movies.length; i++) {
     const item = movies[i];
@@ -1497,8 +1495,14 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
       }
 
       let filter;
-      if (_id) filter = { _id };
-      else filter = { name: name.trim(), type };
+      if (_id) {
+        if (!isValidObjectId(_id)) {
+          throw new Error('Invalid "_id" field');
+        }
+        filter = { _id };
+      } else {
+        filter = { name: name.trim(), type };
+      }
 
       const updateSet = { type };
       const updateUnset = {};
@@ -1506,8 +1510,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
       allowedCommon.forEach((field) => {
         if (field in item && field !== 'type') {
           if (field === 'trailerUrl') {
-            updateSet.trailerUrl =
-              normalizeTrailerUrl(item.trailerUrl);
+            updateSet.trailerUrl = normalizeTrailerUrl(item.trailerUrl);
           } else if (field === 'faqs') {
             updateSet.faqs = normalizeFaqs(item.faqs);
           } else if (field === 'videoUrl7') {
@@ -1522,9 +1525,8 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
         allowedMovieOnly.forEach((f) => {
           if (f in item) updateSet[f] = item[f];
         });
-        updateUnset['episodes'] = '';
+        updateUnset.episodes = '';
       } else {
-        // WebSeries
         allowedWebOnly.forEach((f) => {
           if (f in item) {
             if (f === 'episodes') {
@@ -1535,27 +1537,14 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
           }
         });
 
-        updateUnset['video'] = '';
-        updateUnset['videoUrl2'] = '';
-        updateUnset['videoUrl3'] = ''; // ✅ NEW (Q1)
-        updateUnset['downloadUrl'] = '';
+        updateUnset.video = '';
+        updateUnset.videoUrl2 = '';
+        updateUnset.videoUrl3 = '';
+        updateUnset.downloadUrl = '';
       }
 
       const updateDoc = { $set: updateSet };
       if (Object.keys(updateUnset).length) updateDoc.$unset = updateUnset;
-
-      // ✅ PATCH: If identity fields touched, force external ratings refresh later
-      const touchesRatingsKey = ['type', 'name', 'year', 'imdbId'].some(
-        (f) => f in item
-      );
-      if (touchesRatingsKey) {
-        updateDoc.$set.externalRatingsUpdatedAt = null;
-        updateDoc.$set['externalRatings.imdb.rating'] = null;
-        updateDoc.$set['externalRatings.imdb.votes'] = null;
-        updateDoc.$set['externalRatings.imdb.url'] = '';
-        updateDoc.$set['externalRatings.rottenTomatoes.rating'] = null;
-        updateDoc.$set['externalRatings.rottenTomatoes.url'] = '';
-      }
 
       operations.push({
         updateMany: {
@@ -1564,6 +1553,15 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
           upsert: false,
         },
       });
+
+      const touchesIdentityKey = _id
+        ? ['type', 'name', 'year', 'imdbId'].some((f) => f in item)
+        : ['year', 'imdbId'].some((f) => f in item);
+
+      if (touchesIdentityKey) {
+        if (_id) compareIds.add(String(_id));
+        else fallbackSyncFilters.push(filter);
+      }
     } catch (err) {
       errors.push({
         index: i,
@@ -1582,9 +1580,66 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     });
   }
 
+  let beforeIdentityById = new Map();
+
+  if (compareIds.size) {
+    const beforeDocs = await Movie.find({ _id: { $in: [...compareIds] } })
+      .select('_id type name year imdbId')
+      .lean();
+
+    beforeIdentityById = new Map(
+      beforeDocs.map((doc) => [String(doc._id), getMovieIdentitySnapshot(doc)])
+    );
+  }
+
   const result = await Movie.bulkWrite(operations, { ordered: false });
 
-  // ✅ Make Next.js show updates instantly (ISR cache purge)
+  const docsToSync = [];
+
+  // Sync only docs whose identity truly changed when _id was used
+  if (compareIds.size) {
+    const afterDocs = await Movie.find({ _id: { $in: [...compareIds] } });
+
+    for (const doc of afterDocs) {
+      const before = beforeIdentityById.get(String(doc._id));
+      const after = getMovieIdentitySnapshot(doc);
+
+      if (movieIdentityChanged(before, after)) {
+        resetThirdPartyMetadata(doc);
+        docsToSync.push(doc);
+      }
+    }
+  }
+
+  // Fallback for updates without _id (year/imdbId changes by name+type)
+  if (fallbackSyncFilters.length) {
+    const fallbackDocs = await Movie.find({ $or: fallbackSyncFilters });
+    const seen = new Set(docsToSync.map((doc) => String(doc._id)));
+
+    for (const doc of fallbackDocs) {
+      const key = String(doc._id);
+      if (seen.has(key)) continue;
+      resetThirdPartyMetadata(doc);
+      docsToSync.push(doc);
+      seen.add(key);
+    }
+  }
+
+  if (docsToSync.length) {
+    await runInBatches(
+      docsToSync,
+      BULK_METADATA_SYNC_CONCURRENCY,
+      async (doc) => {
+        await syncMovieMetadataBestEffort(doc, {
+          forceExternalRatings: true,
+          forceTmdb: true,
+          castLimit: TMDB_CAST_LIMIT,
+        });
+        await doc.save();
+      }
+    );
+  }
+
   const revalidateResult = await revalidateFrontend({
     tags: ['movies', 'home'],
     paths: ['/', '/movies'],
@@ -1597,7 +1652,7 @@ const bulkExactUpdateMovies = asyncHandler(async (req, res) => {
     upserted: result.upsertedCount ?? 0,
     errorsCount: errors.length,
     errors,
-    revalidate: revalidateResult, // optional debug (safe)
+    revalidate: revalidateResult,
   });
 });
 
@@ -1668,7 +1723,6 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
   const docsToInsert = [];
   const errors = [];
 
-  // Get max orderIndex
   const maxOrderDoc = await Movie.findOne({})
     .sort({ orderIndex: -1 })
     .select('orderIndex')
@@ -1694,8 +1748,8 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         year,
         video,
         videoUrl2,
-        videoUrl3, // ✅ NEW (Q1)
-        videoUrl7, // ✅ NEW (Q1): optional extra server (Server 1 when present)
+        videoUrl3,
+        videoUrl7,
         episodes,
         casts,
         director,
@@ -1810,6 +1864,18 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
     });
   }
 
+  await runInBatches(
+    docsToInsert,
+    BULK_METADATA_SYNC_CONCURRENCY,
+    async (doc) => {
+      await syncMovieMetadataBestEffort(doc, {
+        forceExternalRatings: true,
+        forceTmdb: true,
+        castLimit: TMDB_CAST_LIMIT,
+      });
+    }
+  );
+
   const insertedMovies = await Movie.insertMany(docsToInsert, {
     ordered: false,
   });
@@ -1818,7 +1884,6 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
     const published = insertedMovies.filter((m) => m?.isPublished !== false);
 
     if (published.length) {
-      // 1) Revalidate list/home once (movie pages are new so no need to revalidate each)
       const { isFrontendRevalidateEnabled, revalidateFrontend } = await import(
         '../utils/frontendRevalidateService.js'
       );
@@ -1830,13 +1895,13 @@ const bulkCreateMovies = asyncHandler(async (req, res) => {
         });
       }
 
-      // 2) Ping IndexNow for all new pages (one request, chunked if needed)
       const urls = published.flatMap((m) => buildMoviePublicUrls(m));
       await notifyIndexNow(urls);
     }
   } catch (e) {
     console.warn('[indexing] bulkCreateMovies:', e?.message || e);
   }
+
   res.status(201).json({
     message: 'Bulk create executed',
     insertedCount: insertedMovies.length,
@@ -1860,7 +1925,6 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
     throw new Error('orderedIds array is required');
   }
 
-  // Normalize + prevent duplicates
   const ordered = orderedIds
     .map((id) => String(id || '').trim())
     .filter(Boolean);
@@ -1876,10 +1940,8 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
     throw new Error('orderedIds must not contain duplicates');
   }
 
-  // Ensure every movie has an orderIndex (best-effort, runs only if missing)
   await ensureOrderIndexes();
 
-  // Build the SAME base filter used by GET /api/movies/admin
   const q = query && typeof query === 'object' ? query : {};
 
   const typeFilter = normalizeTypeParam(q.type);
@@ -1929,7 +1991,6 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
     throw new Error('Page number out of range');
   }
 
-  // Fetch the EXACT docs shown on that page (same pagination logic as getMoviesAdmin)
   let pageDocs = [];
 
   if (skip < normalCount) {
@@ -1974,7 +2035,6 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
   const pageIds = pageDocs.map((d) => String(d._id));
   const pageSet = new Set(pageIds);
 
-  // Strict validation: orderedIds must equal the page ids (same size, no extras, no missing)
   if (ordered.length !== pageIds.length) {
     res.status(400);
     throw new Error('orderedIds must contain exactly the IDs of this page');
@@ -1994,7 +2054,6 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
     }
   }
 
-  // Page "slot" orderIndex values (ascending)
   const slotOrderIndexes = pageDocs
     .map((d) => Number(d.orderIndex))
     .filter((n) => Number.isFinite(n))
@@ -2005,7 +2064,6 @@ const reorderMoviesInPage = asyncHandler(async (req, res) => {
     throw new Error('Some movies are missing orderIndex. Try again.');
   }
 
-  // Swap orderIndex only for these page items
   const bulkOps = ordered.map((id, idx) => ({
     updateOne: {
       filter: { _id: id },
@@ -2154,12 +2212,9 @@ export {
   deleteAllMovies,
   createMovie,
   getLatestMovies,
-
-  // ✅ Latest New
   getLatestNewMovies,
   getLatestNewMoviesAdmin,
   setLatestNewMovies,
-
   getDistinctBrowseBy,
   adminReplyReview,
   generateSitemap,
