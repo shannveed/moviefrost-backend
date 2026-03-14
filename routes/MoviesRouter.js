@@ -23,11 +23,10 @@ import {
   createGuestMovieRating,
   getMovieRatings,
   getMyMovieRating,
-  deleteMovieRatingAdmin,
+  deleteMovieRatingAdmin, // ✅ NEW
 } from '../Controllers/RatingsController.js';
 
 import { syncTmdbCreditsAdmin } from '../Controllers/TmdbController.js';
-import { syncExternalRatingsAdmin } from '../Controllers/ExternalRatingsController.js';
 
 const router = express.Router();
 
@@ -56,16 +55,8 @@ router.get('/related/:id', getRelatedMovies);
 // ADMIN READ ROUTES (include unpublished / drafts)
 router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
 
-// TMDb credits sync
+// TMDb credits sync (casts/director overwrite)
 router.post('/admin/tmdb/sync-credits', protect, admin, syncTmdbCreditsAdmin);
-
-// External ratings sync
-router.post(
-  '/admin/external-ratings/sync',
-  protect,
-  admin,
-  syncExternalRatingsAdmin
-);
 
 // Admin Latest New list
 router.get('/admin/latest-new', protect, admin, moviesController.getLatestNewMoviesAdmin);
@@ -93,7 +84,7 @@ router.post('/:id/ratings/guest', createGuestMovieRating);
 // logged-in rating
 router.post('/:id/ratings', protect, upsertMovieRating);
 
-// admin delete rating
+// ✅ NEW: admin delete rating (keep BELOW /me and /guest to avoid route conflicts)
 router.delete('/:id/ratings/:ratingId', protect, admin, deleteMovieRatingAdmin);
 
 // PUBLIC single movie (only published)
