@@ -1,6 +1,7 @@
 // backend/Controllers/SitemapController.js
 import asyncHandler from 'express-async-handler';
 import Movie from '../Models/MoviesModel.js';
+import Categories from '../Models/CategoriesModel.js';
 import {
   getPublishedGenrePages,
   getPublishedIndustryPages,
@@ -57,32 +58,51 @@ const addUniqueUrl = (urls, seen, entry) => {
 export const generateSitemap = asyncHandler(async (_req, res) => {
   const [
     movies,
-    categoryValues,
+    categoryDocs,
+    publishedCategoryValues,
     languageValues,
     yearValues,
     browseByValues,
   ] = await Promise.all([
     Movie.find(publicVisibilityFilter).select('_id slug updatedAt').lean(),
+
+    // Same source as frontend /genre/[slug] route
+    Categories.find({ title: { $nin: [null, ''] } }).select('title').lean(),
+
+    // Published exact category values used to guarantee real content
     Movie.distinct('category', {
       ...publicVisibilityFilter,
       category: { $nin: [null, ''] },
     }),
+
+    // Published exact language values used to guarantee real content
     Movie.distinct('language', {
       ...publicVisibilityFilter,
       language: { $nin: [null, ''] },
     }),
+
     Movie.distinct('year', {
       ...publicVisibilityFilter,
       year: { $nin: [null, ''] },
     }),
+
     Movie.distinct('browseBy', {
       ...publicVisibilityFilter,
       browseBy: { $nin: [null, ''] },
     }),
   ]);
 
-  const genrePages = getPublishedGenrePages(categoryValues);
+  // ✅ Genre pages now use SAME source as frontend route:
+  // Categories collection + exact published content check
+  const genrePages = getPublishedGenrePages(
+    (categoryDocs || []).map((c) => c?.title),
+    publishedCategoryValues
+  );
+
+  // ✅ Language pages now use SAME supported set as frontend route
+  // + exact published content check
   const languagePages = getPublishedLanguagePages(languageValues);
+
   const yearPages = getPublishedYearPages(yearValues);
   const industryPages = getPublishedIndustryPages(browseByValues);
 
@@ -126,7 +146,7 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     });
   }
 
-  // Genre landing pages
+  // Genre landing pages (frontend-safe + content-safe)
   for (const genre of genrePages) {
     addUniqueUrl(urls, seen, {
       loc: `${FRONTEND_BASE_URL}/genre/${genre.slug}`,
@@ -156,7 +176,7 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     });
   }
 
-  // Language landing pages
+  // Language landing pages (frontend-safe + content-safe)
   for (const language of languagePages) {
     addUniqueUrl(urls, seen, {
       loc: `${FRONTEND_BASE_URL}/language/${language.slug}`,

@@ -16,6 +16,53 @@ export const slugifySegment = (value = '') =>
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+const buildExactAvailabilitySet = (values = []) =>
+  new Set(
+    (values || [])
+      .map((v) => normalizeKey(v))
+      .filter(Boolean)
+  );
+
+/**
+ * Keep this list aligned with:
+ * frontend-next/src/data/filterData.js -> LanguageData
+ *
+ * IMPORTANT:
+ * We only sitemap language pages that:
+ * 1) are supported by the frontend route, and
+ * 2) actually have at least one published title.
+ */
+export const SUPPORTED_LANGUAGE_PAGES = [
+  'English',
+  'Korean',
+  'Hindi',
+  'Chinese',
+  'Japanese',
+  'Urdu',
+  'Turkish',
+  'Arabic',
+  'French',
+  'German',
+  'Spanish',
+  'Italian',
+  'Russian',
+  'Portuguese',
+  'Dutch',
+  'Swedish',
+  'Danish',
+  'Norwegian',
+  'Finnish',
+  'Indonesian',
+  'Malay',
+  'Thai',
+  'Vietnamese',
+  'Hebrew',
+  'Greek',
+  'Polish',
+  'Romanian',
+  'Swahili',
+];
+
 export const INDUSTRY_PAGES = [
   {
     slug: 'hollywood-english',
@@ -92,12 +139,32 @@ export const getPublishedIndustryPages = (browseByValues = []) => {
   );
 };
 
-export const getPublishedGenrePages = (categories = []) => {
+/**
+ * Genre pages MUST follow the same source as the frontend route:
+ * frontend /genre/[slug] resolves from the Categories collection.
+ *
+ * To avoid bad sitemap URLs, only include category titles that:
+ * - exist in Categories collection, and
+ * - have an EXACT published movie.category match (case-insensitive)
+ *
+ * This intentionally excludes:
+ * - combined category strings not supported by the route
+ * - legacy category values
+ * - empty / thin genre pages
+ */
+export const getPublishedGenrePages = (
+  categoryTitles = [],
+  publishedMovieCategories = []
+) => {
+  const available = buildExactAvailabilitySet(publishedMovieCategories);
   const map = new Map();
 
-  for (const category of categories || []) {
+  for (const category of categoryTitles || []) {
     const title = String(category ?? '').trim();
     if (!title) continue;
+
+    // only include genre pages the frontend can resolve AND that have content
+    if (!available.has(normalizeKey(title))) continue;
 
     const slug = slugifySegment(title);
     if (!slug || map.has(slug)) continue;
@@ -110,12 +177,27 @@ export const getPublishedGenrePages = (categories = []) => {
   );
 };
 
-export const getPublishedLanguagePages = (languages = []) => {
+/**
+ * Language pages MUST follow the same source as the frontend route:
+ * frontend /language/[slug] resolves from a supported language whitelist.
+ *
+ * To avoid sitemap/frontend mismatches, only include language pages that:
+ * - are supported by the frontend whitelist
+ * - actually have at least one published movie.language match
+ */
+export const getPublishedLanguagePages = (
+  publishedMovieLanguages = [],
+  supportedLanguages = SUPPORTED_LANGUAGE_PAGES
+) => {
+  const available = buildExactAvailabilitySet(publishedMovieLanguages);
   const map = new Map();
 
-  for (const language of languages || []) {
+  for (const language of supportedLanguages || []) {
     const title = String(language ?? '').trim();
     if (!title) continue;
+
+    // only include pages that frontend supports AND published titles actually use
+    if (!available.has(normalizeKey(title))) continue;
 
     const slug = slugifySegment(title);
     if (!slug || map.has(slug)) continue;
