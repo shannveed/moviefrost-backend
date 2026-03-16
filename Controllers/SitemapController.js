@@ -6,6 +6,7 @@ import {
   getPublishedGenrePages,
   getPublishedIndustryPages,
   getPublishedLanguagePages,
+  getPublishedTypePages,
   getPublishedYearPages,
 } from '../utils/discoveryPages.js';
 
@@ -24,6 +25,9 @@ const escapeXml = (unsafe = '') =>
 
 // Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
+
+// ✅ Must stay aligned with backend Controllers/MoviesController.js
+const LISTING_PAGE_SIZE = 50;
 
 const setSitemapHeaders = (res) => {
   res.header('Content-Type', 'application/xml; charset=UTF-8');
@@ -51,6 +55,44 @@ const addUniqueUrl = (urls, seen, entry) => {
   urls.push(entry);
 };
 
+const toPageCount = (total) => {
+  const n = Number(total);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.ceil(n / LISTING_PAGE_SIZE);
+};
+
+const addPaginatedListingUrls = (
+  urls,
+  seen,
+  baseLoc,
+  totalItems,
+  {
+    lastmod,
+    changefreq = 'weekly',
+    basePriority = '0.8',
+    pagePriority = '0.6',
+  } = {}
+) => {
+  const pageCount = toPageCount(totalItems);
+  if (!pageCount) return;
+
+  addUniqueUrl(urls, seen, {
+    loc: baseLoc,
+    lastmod,
+    changefreq,
+    priority: basePriority,
+  });
+
+  for (let page = 2; page <= pageCount; page += 1) {
+    addUniqueUrl(urls, seen, {
+      loc: `${baseLoc}/page/${page}`,
+      lastmod,
+      changefreq,
+      priority: pagePriority,
+    });
+  }
+};
+
 /* ============================================================
    MAIN SITEMAP
    GET /sitemap.xml
@@ -63,19 +105,18 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     languageValues,
     yearValues,
     browseByValues,
+    movieCount,
+    webSeriesCount,
   ] = await Promise.all([
     Movie.find(publicVisibilityFilter).select('_id slug updatedAt').lean(),
 
-    // Same source as frontend /genre/[slug] route
     Categories.find({ title: { $nin: [null, ''] } }).select('title').lean(),
 
-    // Published exact category values used to guarantee real content
     Movie.distinct('category', {
       ...publicVisibilityFilter,
       category: { $nin: [null, ''] },
     }),
 
-    // Published exact language values used to guarantee real content
     Movie.distinct('language', {
       ...publicVisibilityFilter,
       language: { $nin: [null, ''] },
@@ -90,21 +131,75 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
       ...publicVisibilityFilter,
       browseBy: { $nin: [null, ''] },
     }),
+
+    Movie.countDocuments({
+      ...publicVisibilityFilter,
+      type: 'Movie',
+    }),
+
+    Movie.countDocuments({
+      ...publicVisibilityFilter,
+      type: 'WebSeries',
+    }),
   ]);
 
-  // ✅ Genre pages now use SAME source as frontend route:
-  // Categories collection + exact published content check
   const genrePages = getPublishedGenrePages(
     (categoryDocs || []).map((c) => c?.title),
     publishedCategoryValues
   );
 
-  // ✅ Language pages now use SAME supported set as frontend route
-  // + exact published content check
   const languagePages = getPublishedLanguagePages(languageValues);
-
   const yearPages = getPublishedYearPages(yearValues);
   const industryPages = getPublishedIndustryPages(browseByValues);
+  const typePages = getPublishedTypePages({ movieCount, webSeriesCount });
+
+  // ✅ Count items for paginated listing URLs
+  const [
+    genrePagesWithCounts,
+    languagePagesWithCounts,
+    yearPagesWithCounts,
+    industryPagesWithCounts,
+  ] = await Promise.all([
+    Promise.all(
+      genrePages.map(async (genre) => ({
+        ...genre,
+        totalItems: await Movie.countDocuments({
+          ...publicVisibilityFilter,
+          category: genre.title,
+        }),
+      }))
+    ),
+
+    Promise.all(
+      languagePages.map(async (language) => ({
+        ...language,
+        totalItems: await Movie.countDocuments({
+          ...publicVisibilityFilter,
+          language: language.title,
+        }),
+      }))
+    ),
+
+    Promise.all(
+      yearPages.map(async (year) => ({
+        ...year,
+        totalItems: await Movie.countDocuments({
+          ...publicVisibilityFilter,
+          year: year.year,
+        }),
+      }))
+    ),
+
+    Promise.all(
+      industryPages.map(async (industry) => ({
+        ...industry,
+        totalItems: await Movie.countDocuments({
+          ...publicVisibilityFilter,
+          browseBy: { $in: industry.browseByValues },
+        }),
+      }))
+    ),
+  ]);
 
   const now = new Date().toISOString();
   const urls = [];
@@ -130,6 +225,17 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
 
   for (const page of staticPages) addUniqueUrl(urls, seen, page);
 
+  // ✅ Plain paginated /movies/page/N
+  const moviesPageCount = toPageCount(movies.length);
+  for (let page = 2; page <= moviesPageCount; page += 1) {
+    addUniqueUrl(urls, seen, {
+      loc: `${FRONTEND_BASE_URL}/movies/page/${page}`,
+      lastmod: now,
+      changefreq: 'daily',
+      priority: '0.75',
+    });
+  }
+
   // Movie detail pages
   for (const movie of movies) {
     const lastmod = movie.updatedAt
@@ -146,44 +252,86 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     });
   }
 
-  // Genre landing pages (frontend-safe + content-safe)
-  for (const genre of genrePages) {
-    addUniqueUrl(urls, seen, {
-      loc: `${FRONTEND_BASE_URL}/genre/${genre.slug}`,
-      lastmod: now,
-      changefreq: 'weekly',
-      priority: '0.8',
-    });
+  // ✅ Type landing pages + paginated type pages
+  for (const typePage of typePages) {
+    const totalItems = typePage.type === 'Movie' ? movieCount : webSeriesCount;
+
+    addPaginatedListingUrls(
+      urls,
+      seen,
+      `${FRONTEND_BASE_URL}/movies/type/${typePage.slug}`,
+      totalItems,
+      {
+        lastmod: now,
+        changefreq: 'weekly',
+        basePriority: '0.85',
+        pagePriority: '0.65',
+      }
+    );
   }
 
-  // Industry landing pages
-  for (const industry of industryPages) {
-    addUniqueUrl(urls, seen, {
-      loc: `${FRONTEND_BASE_URL}/industry/${industry.slug}`,
-      lastmod: now,
-      changefreq: 'weekly',
-      priority: '0.85',
-    });
+  // ✅ Genre landing pages + paginated genre pages
+  for (const genre of genrePagesWithCounts) {
+    addPaginatedListingUrls(
+      urls,
+      seen,
+      `${FRONTEND_BASE_URL}/genre/${genre.slug}`,
+      genre.totalItems,
+      {
+        lastmod: now,
+        changefreq: 'weekly',
+        basePriority: '0.8',
+        pagePriority: '0.6',
+      }
+    );
   }
 
-  // Year landing pages
-  for (const year of yearPages) {
-    addUniqueUrl(urls, seen, {
-      loc: `${FRONTEND_BASE_URL}/year/${year.slug}`,
-      lastmod: now,
-      changefreq: 'weekly',
-      priority: '0.75',
-    });
+  // ✅ Industry landing pages + paginated industry pages
+  for (const industry of industryPagesWithCounts) {
+    addPaginatedListingUrls(
+      urls,
+      seen,
+      `${FRONTEND_BASE_URL}/industry/${industry.slug}`,
+      industry.totalItems,
+      {
+        lastmod: now,
+        changefreq: 'weekly',
+        basePriority: '0.85',
+        pagePriority: '0.65',
+      }
+    );
   }
 
-  // Language landing pages (frontend-safe + content-safe)
-  for (const language of languagePages) {
-    addUniqueUrl(urls, seen, {
-      loc: `${FRONTEND_BASE_URL}/language/${language.slug}`,
-      lastmod: now,
-      changefreq: 'weekly',
-      priority: '0.75',
-    });
+  // ✅ Year landing pages + paginated year pages
+  for (const year of yearPagesWithCounts) {
+    addPaginatedListingUrls(
+      urls,
+      seen,
+      `${FRONTEND_BASE_URL}/year/${year.slug}`,
+      year.totalItems,
+      {
+        lastmod: now,
+        changefreq: 'weekly',
+        basePriority: '0.75',
+        pagePriority: '0.55',
+      }
+    );
+  }
+
+  // ✅ Language landing pages + paginated language pages
+  for (const language of languagePagesWithCounts) {
+    addPaginatedListingUrls(
+      urls,
+      seen,
+      `${FRONTEND_BASE_URL}/language/${language.slug}`,
+      language.totalItems,
+      {
+        lastmod: now,
+        changefreq: 'weekly',
+        basePriority: '0.75',
+        pagePriority: '0.55',
+      }
+    );
   }
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>

@@ -63,6 +63,27 @@ export const SUPPORTED_LANGUAGE_PAGES = [
   'Swahili',
 ];
 
+/**
+ * ✅ NEW: dedicated type pages
+ * Keep aligned with frontend-next/src/lib/discoveryPages.js
+ */
+export const TYPE_PAGES = [
+  { slug: 'movie', type: 'Movie', title: 'Movies' },
+  { slug: 'web-series', type: 'WebSeries', title: 'Web Series' },
+];
+
+export const getPublishedTypePages = ({
+  movieCount = 0,
+  webSeriesCount = 0,
+} = {}) => {
+  const counts = {
+    Movie: Number(movieCount) || 0,
+    WebSeries: Number(webSeriesCount) || 0,
+  };
+
+  return TYPE_PAGES.filter((page) => counts[page.type] > 0);
+};
+
 export const INDUSTRY_PAGES = [
   {
     slug: 'hollywood-english',
@@ -163,7 +184,6 @@ export const getPublishedGenrePages = (
     const title = String(category ?? '').trim();
     if (!title) continue;
 
-    // only include genre pages the frontend can resolve AND that have content
     if (!available.has(normalizeKey(title))) continue;
 
     const slug = slugifySegment(title);
@@ -196,7 +216,6 @@ export const getPublishedLanguagePages = (
     const title = String(language ?? '').trim();
     if (!title) continue;
 
-    // only include pages that frontend supports AND published titles actually use
     if (!available.has(normalizeKey(title))) continue;
 
     const slug = slugifySegment(title);
