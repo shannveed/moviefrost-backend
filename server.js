@@ -41,7 +41,7 @@ const __dirname = path.dirname(__filename);
 // Public backend host (used in CSP / CORS)
 const BACKEND_HOST =
   process.env.BACKEND_PUBLIC_URL ||
-  'https://moviefrost-backend-six.vercel.app';
+  'https://moviefrost-backend-three.vercel.app';
 
 app.use(
   helmet({
