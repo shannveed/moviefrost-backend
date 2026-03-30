@@ -14,6 +14,7 @@ import { connectDB } from './config/db.js';
 import userRoutes from './routes/UserRouter.js';
 import moviesRouter from './routes/MoviesRouter.js';
 import categoriesRouter from './routes/CategoriesRouter.js';
+import blogRouter from './routes/BlogRouter.js';
 import { errorHandler } from './middlewares/errorMiddleware.js';
 import Uploadrouter from './Controllers/UploadFile.js';
 import {
@@ -192,6 +193,7 @@ connectDB();
 app.use('/api/users', userRoutes);
 app.use('/api/movies', moviesRouter);
 app.use('/api/categories', categoriesRouter);
+app.use('/api/blog', blogRouter);
 app.use('/api/push-campaigns', pushCampaignRouter);
 app.use('/api/upload', Uploadrouter);
 app.use('/api/notifications', notificationsRouter);

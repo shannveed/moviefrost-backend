@@ -2,6 +2,7 @@
 import asyncHandler from 'express-async-handler';
 import Movie from '../Models/MoviesModel.js';
 import Categories from '../Models/CategoriesModel.js';
+import BlogPost from '../Models/BlogPostModel.js';
 import {
   getPublishedGenrePages,
   getPublishedIndustryPages,
@@ -9,6 +10,7 @@ import {
   getPublishedTypePages,
   getPublishedYearPages,
 } from '../utils/discoveryPages.js';
+import { BLOG_CATEGORIES } from '../utils/blogCategories.js';
 
 const FRONTEND_BASE_URL = (
   process.env.PUBLIC_FRONTEND_URL || 'https://www.moviefrost.com'
@@ -25,6 +27,7 @@ const escapeXml = (unsafe = '') =>
 
 // Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
+const publicBlogFilter = { isPublished: true };
 
 // ✅ Must stay aligned with backend Controllers/MoviesController.js
 const LISTING_PAGE_SIZE = 50;
@@ -107,6 +110,9 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     browseByValues,
     movieCount,
     webSeriesCount,
+    blogPosts,
+    blogCategoryAgg,
+    trendingBlogCount,
   ] = await Promise.all([
     Movie.find(publicVisibilityFilter).select('_id slug updatedAt').lean(),
 
@@ -140,6 +146,25 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     Movie.countDocuments({
       ...publicVisibilityFilter,
       type: 'WebSeries',
+    }),
+
+    BlogPost.find(publicBlogFilter)
+      .select('_id slug categorySlug updatedAt')
+      .lean(),
+
+    BlogPost.aggregate([
+      { $match: publicBlogFilter },
+      {
+        $group: {
+          _id: '$categorySlug',
+          count: { $sum: 1 },
+        },
+      },
+    ]),
+
+    BlogPost.countDocuments({
+      ...publicBlogFilter,
+      isTrending: true,
     }),
   ]);
 
@@ -201,6 +226,18 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
     ),
   ]);
 
+  const blogCountMap = new Map(
+    (blogCategoryAgg || []).map((row) => [
+      String(row?._id || ''),
+      Number(row?.count || 0),
+    ])
+  );
+
+  const blogCategoriesWithCounts = BLOG_CATEGORIES.map((category) => ({
+    ...category,
+    totalItems: blogCountMap.get(category.slug) || 0,
+  })).filter((category) => category.totalItems > 0);
+
   const now = new Date().toISOString();
   const urls = [];
   const seen = new Set();
@@ -208,6 +245,7 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
   const staticPages = [
     { loc: `${FRONTEND_BASE_URL}/`, changefreq: 'daily', priority: '1.0' },
     { loc: `${FRONTEND_BASE_URL}/movies`, changefreq: 'daily', priority: '0.9' },
+    { loc: `${FRONTEND_BASE_URL}/blog`, changefreq: 'weekly', priority: '0.85' },
     { loc: `${FRONTEND_BASE_URL}/about-us`, changefreq: 'weekly', priority: '0.7' },
     { loc: `${FRONTEND_BASE_URL}/contact-us`, changefreq: 'weekly', priority: '0.7' },
     { loc: `${FRONTEND_BASE_URL}/dmca`, changefreq: 'monthly', priority: '0.6' },
@@ -246,6 +284,45 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
 
     addUniqueUrl(urls, seen, {
       loc: `${FRONTEND_BASE_URL}/movie/${pathSegment}`,
+      lastmod,
+      changefreq: 'weekly',
+      priority: '0.8',
+    });
+  }
+
+  // Blog trending page
+  if (Number(trendingBlogCount || 0) > 0) {
+    addUniqueUrl(urls, seen, {
+      loc: `${FRONTEND_BASE_URL}/blog/trending-articles`,
+      lastmod: now,
+      changefreq: 'weekly',
+      priority: '0.8',
+    });
+  }
+
+  // Blog category pages
+  for (const category of blogCategoriesWithCounts) {
+    addUniqueUrl(urls, seen, {
+      loc: `${FRONTEND_BASE_URL}/blog/${category.slug}`,
+      lastmod: now,
+      changefreq: 'weekly',
+      priority: '0.75',
+    });
+  }
+
+  // Blog post pages
+  for (const post of blogPosts || []) {
+    const categorySlug = String(post?.categorySlug || '').trim();
+    const slug = String(post?.slug || '').trim();
+
+    if (!categorySlug || !slug) continue;
+
+    const lastmod = post.updatedAt
+      ? new Date(post.updatedAt).toISOString()
+      : undefined;
+
+    addUniqueUrl(urls, seen, {
+      loc: `${FRONTEND_BASE_URL}/blog/${categorySlug}/${slug}`,
       lastmod,
       changefreq: 'weekly',
       priority: '0.8',
