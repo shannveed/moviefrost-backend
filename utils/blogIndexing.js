@@ -192,7 +192,73 @@ export const afterBulkBlogCreate = async ({ createdPosts = [] } = {}) => {
   });
 };
 
+export const afterBulkBlogUpdate = async ({ updates = [] } = {}) => {
+  const pairs = Array.isArray(updates) ? updates : [];
+
+  const relevantPairs = pairs.filter((entry) => {
+    const beforePub = isPublicBlog(entry?.before);
+    const afterPub = isPublicBlog(entry?.after);
+    return beforePub || afterPub;
+  });
+
+  if (!relevantPairs.length) {
+    return { skipped: true, reason: 'not_public' };
+  }
+
+  const tags = ['blog'];
+  const paths = [blogHomePath];
+  let trendingAffected = false;
+
+  for (const entry of relevantPairs) {
+    const before = entry?.before || null;
+    const after = entry?.after || null;
+
+    const beforePub = isPublicBlog(before);
+    const afterPub = isPublicBlog(after);
+
+    if (
+      isTrendingPublic(before) ||
+      isTrendingPublic(after) ||
+      Boolean(before?.isTrending) !== Boolean(after?.isTrending)
+    ) {
+      trendingAffected = true;
+    }
+
+    if (beforePub && before?.categorySlug) {
+      tags.push(`blog-category:${String(before.categorySlug).trim()}`);
+      paths.push(blogCategoryPath(before?.categorySlug));
+    }
+
+    if (afterPub && after?.categorySlug) {
+      tags.push(`blog-category:${String(after.categorySlug).trim()}`);
+      paths.push(blogCategoryPath(after?.categorySlug));
+    }
+
+    if (beforePub && before?.slug) {
+      tags.push(`blog:${String(before.slug).trim()}`);
+      paths.push(blogPostPathFromDoc(before));
+    }
+
+    if (afterPub && after?.slug) {
+      tags.push(`blog:${String(after.slug).trim()}`);
+      paths.push(blogPostPathFromDoc(after));
+    }
+  }
+
+  if (trendingAffected) {
+    tags.push('blog-trending');
+    paths.push(blogTrendingPath);
+  }
+
+  return runBlogIndexing({
+    action: 'bulk-update',
+    tags,
+    paths,
+  });
+};
+
 export default {
   afterBlogMutation,
   afterBulkBlogCreate,
+  afterBulkBlogUpdate,
 };

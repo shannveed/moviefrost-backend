@@ -15,6 +15,7 @@ import {
    updateBlogPost,
 } from '../Controllers/BlogController.js';
 import { findBlogPostsByTitlesAdmin } from '../Controllers/AdminBlogLookupController.js';
+import { bulkExactUpdateBlogPosts } from '../Controllers/AdminBlogBulkUpdateController.js';
 
 const router = express.Router();
 
@@ -23,6 +24,7 @@ const router = express.Router();
    ============================================================ */
 router.get('/admin', protect, admin, getBlogPostsAdmin);
 router.post('/admin/find-by-titles', protect, admin, findBlogPostsByTitlesAdmin);
+router.put('/admin/bulk-exact', protect, admin, bulkExactUpdateBlogPosts);
 router.post('/admin/bulk', protect, admin, bulkCreateBlogPosts);
 router.get('/admin/:id/preview', protect, admin, getBlogPostPreviewAdmin);
 router.get('/admin/:id', protect, admin, getBlogPostAdmin);
