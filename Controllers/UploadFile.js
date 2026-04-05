@@ -1,4 +1,4 @@
-// backend/Controllers/UploadFile.js - R2 Upload + long cache headers
+// backend/Controllers/UploadFile.js - R2 Upload + stronger long cache headers
 import express from "express";
 import multer from "multer";
 import { randomUUID } from "crypto";
@@ -61,8 +61,10 @@ router.post("/", upload.single("file"), async (req, res) => {
     const ext = extFromMime || extFromName || "bin";
     const key = `uploads/${Date.now()}-${randomUUID()}.${ext}`;
 
-    // ✅ Efficient cache lifetime (safe because filename is unique)
-    const cacheControl = "public, max-age=31536000, immutable";
+    // ✅ Very long cache lifetime is safe because upload filenames are unique.
+    // When you replace a temporary/sample image later, the movie document
+    // points to a NEW image URL instead of changing the same file URL.
+    const cacheControl = "public, max-age=31536000, s-maxage=31536000, immutable";
 
     await r2.send(
       new PutObjectCommand({

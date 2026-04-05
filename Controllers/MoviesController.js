@@ -14,6 +14,12 @@ import { slugify } from '../utils/slugify.js';
 const REORDER_PAGE_LIMIT = 50;
 const LATEST_NEW_LIMIT = 100;
 const MAX_FAQS = 5;
+const PUBLIC_MOVIE_CARD_SELECT =
+  '_id slug name image titleImage thumbnailInfo type category browseBy time year language latest previousHit latestNew banner isPublished orderIndex rate numberOfReviews';
+
+const ADMIN_MOVIE_CARD_SELECT =
+  '_id slug name image titleImage thumbnailInfo type category browseBy time year language latest previousHit latestNew latestNewAt banner bannerAt isPublished orderIndex createdAt updatedAt';
+
 
 // Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
@@ -411,13 +417,28 @@ const importMovies = asyncHandler(async (req, res) => {
 // PUBLIC: get all movies (only published)
 const getMovies = asyncHandler(async (req, res) => {
   try {
-    const { category, time, language, rate, year, search, browseBy, type } = req.query;
+    const {
+      category,
+      time,
+      language,
+      rate,
+      year,
+      search,
+      browseBy,
+      type,
+      limit: limitQuery,
+    } = req.query;
+
     const typeFilter = normalizeTypeParam(type);
 
     // ✅ starts-with search only
     const searchRegex = buildStartsWithRegex(search);
 
-    let baseFilter = {
+    const page = Math.max(1, Number(req.query.pageNumber) || 1);
+    const limit = clampLimit(limitQuery, REORDER_PAGE_LIMIT, REORDER_PAGE_LIMIT);
+    const skip = (page - 1) * limit;
+
+    const baseFilter = {
       ...publicVisibilityFilter,
       ...(typeFilter && { type: typeFilter }),
       ...(category && { category }),
@@ -431,20 +452,18 @@ const getMovies = asyncHandler(async (req, res) => {
       ...(searchRegex && { name: searchRegex }),
     };
 
-    const page = Number(req.query.pageNumber) || 1;
-    const limit = REORDER_PAGE_LIMIT;
-    const skip = (page - 1) * limit;
-
     const normalFilter = { ...baseFilter, previousHit: { $ne: true } };
     const prevHitFilter = { ...baseFilter, previousHit: true };
 
     const sortLatest = { latest: -1, orderIndex: 1, createdAt: -1 };
     const sortPrevHits = { orderIndex: 1, createdAt: -1 };
 
-    const normalCount = await Movie.countDocuments(normalFilter);
-    const totalCount =
-      normalCount + (await Movie.countDocuments(prevHitFilter));
+    const [normalCount, prevHitCount] = await Promise.all([
+      Movie.countDocuments(normalFilter),
+      Movie.countDocuments(prevHitFilter),
+    ]);
 
+    const totalCount = normalCount + prevHitCount;
     let movies = [];
 
     if (skip < normalCount) {
@@ -455,12 +474,17 @@ const getMovies = asyncHandler(async (req, res) => {
       const normalMovies = await Movie.find(normalFilter)
         .sort(sortLatest)
         .skip(skip)
-        .limit(takeFromNormal);
+        .limit(takeFromNormal)
+        .select(PUBLIC_MOVIE_CARD_SELECT)
+        .lean();
 
       if (takeFromPrevHits > 0) {
         const prevHitMovies = await Movie.find(prevHitFilter)
           .sort(sortPrevHits)
-          .limit(takeFromPrevHits);
+          .limit(takeFromPrevHits)
+          .select(PUBLIC_MOVIE_CARD_SELECT)
+          .lean();
+
         movies = [...normalMovies, ...prevHitMovies];
       } else {
         movies = normalMovies;
@@ -470,7 +494,9 @@ const getMovies = asyncHandler(async (req, res) => {
       movies = await Movie.find(prevHitFilter)
         .sort(sortPrevHits)
         .skip(adjustedSkip)
-        .limit(limit);
+        .limit(limit)
+        .select(PUBLIC_MOVIE_CARD_SELECT)
+        .lean();
     }
 
     const pages = Math.ceil(totalCount / limit) || 1;
@@ -489,13 +515,26 @@ const getMovies = asyncHandler(async (req, res) => {
 // ADMIN: get all movies (includes drafts/unpublished)
 const getMoviesAdmin = asyncHandler(async (req, res) => {
   try {
-    const { category, time, language, rate, year, search, browseBy, type } = req.query;
+    const {
+      category,
+      time,
+      language,
+      rate,
+      year,
+      search,
+      browseBy,
+      type,
+      limit: limitQuery,
+    } = req.query;
 
     const typeFilter = normalizeTypeParam(type);
-
     const searchRegex = buildStartsWithRegex(search);
 
-    let baseFilter = {
+    const page = Math.max(1, Number(req.query.pageNumber) || 1);
+    const limit = clampLimit(limitQuery, REORDER_PAGE_LIMIT, REORDER_PAGE_LIMIT);
+    const skip = (page - 1) * limit;
+
+    const baseFilter = {
       ...(typeFilter && { type: typeFilter }),
       ...(category && { category }),
       ...(time && { time }),
@@ -508,20 +547,18 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
       ...(searchRegex && { name: searchRegex }),
     };
 
-    const page = Number(req.query.pageNumber) || 1;
-    const limit = REORDER_PAGE_LIMIT;
-    const skip = (page - 1) * limit;
-
     const normalFilter = { ...baseFilter, previousHit: { $ne: true } };
     const prevHitFilter = { ...baseFilter, previousHit: true };
 
     const sortLatest = { latest: -1, orderIndex: 1, createdAt: -1 };
     const sortPrevHits = { orderIndex: 1, createdAt: -1 };
 
-    const normalCount = await Movie.countDocuments(normalFilter);
-    const totalCount =
-      normalCount + (await Movie.countDocuments(prevHitFilter));
+    const [normalCount, prevHitCount] = await Promise.all([
+      Movie.countDocuments(normalFilter),
+      Movie.countDocuments(prevHitFilter),
+    ]);
 
+    const totalCount = normalCount + prevHitCount;
     let movies = [];
 
     if (skip < normalCount) {
@@ -532,12 +569,17 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
       const normalMovies = await Movie.find(normalFilter)
         .sort(sortLatest)
         .skip(skip)
-        .limit(takeFromNormal);
+        .limit(takeFromNormal)
+        .select(ADMIN_MOVIE_CARD_SELECT)
+        .lean();
 
       if (takeFromPrevHits > 0) {
         const prevHitMovies = await Movie.find(prevHitFilter)
           .sort(sortPrevHits)
-          .limit(takeFromPrevHits);
+          .limit(takeFromPrevHits)
+          .select(ADMIN_MOVIE_CARD_SELECT)
+          .lean();
+
         movies = [...normalMovies, ...prevHitMovies];
       } else {
         movies = normalMovies;
@@ -547,7 +589,9 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
       movies = await Movie.find(prevHitFilter)
         .sort(sortPrevHits)
         .skip(adjustedSkip)
-        .limit(limit);
+        .limit(limit)
+        .select(ADMIN_MOVIE_CARD_SELECT)
+        .lean();
     }
 
     const pages = Math.ceil(totalCount / limit) || 1;
@@ -562,6 +606,7 @@ const getMoviesAdmin = asyncHandler(async (req, res) => {
     res.status(400).json({ message: error.message });
   }
 });
+
 
 // PUBLIC: get movie by id/slug (only published)
 const getMovieById = asyncHandler(async (req, res) => {
@@ -669,14 +714,17 @@ const getMovieByIdAdmin = asyncHandler(async (req, res) => {
 const getTopRatedMovies = asyncHandler(async (req, res) => {
   try {
     const movies = await Movie.find(publicVisibilityFilter)
-      .sort({ rate: -1 })
+      .sort({ rate: -1, numberOfReviews: -1, viewCount: -1, createdAt: -1 })
       .limit(10)
-      .select('-reviews');
+      .select(PUBLIC_MOVIE_CARD_SELECT)
+      .lean();
+
     res.json(movies);
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
 });
+
 
 // PUBLIC: random (only published)
 const getRandomMovies = asyncHandler(async (req, res) => {
@@ -1200,14 +1248,17 @@ const createMovie = asyncHandler(async (req, res) => {
 const getLatestMovies = asyncHandler(async (_req, res) => {
   try {
     const movies = await Movie.find(publicVisibilityFilter)
-      .sort({ createdAt: -1 })
-      .limit(15)
-      .select('-reviews');
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(30)
+      .select(PUBLIC_MOVIE_CARD_SELECT)
+      .lean();
+
     res.json(movies);
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
 });
+
 
 /* ================================================================== */
 /* ✅ NEW: "Latest New" list for HomeScreen                            */
