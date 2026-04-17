@@ -42,7 +42,7 @@ const __dirname = path.dirname(__filename);
 // Public backend host (used in CSP / CORS)
 const BACKEND_HOST =
   process.env.BACKEND_PUBLIC_URL ||
-  'https://moviefrost-backend-six.vercel.app';
+  'https://moviefrost-backend-peach.vercel.app';
 
 app.use(
   helmet({
@@ -81,8 +81,8 @@ app.use(
           'https://moviefrost.com',
           'https://www.moviefrost.com',
           BACKEND_HOST,
-          'https://frontend-next-dusky-two.vercel.app',
-          'https://moviefrost-frontend-next-dusky-two*.vercel.app',
+          'https://frontend-next-ivory-nu.vercel.app',
+          'https://moviefrost-frontend-next-ivory-nu*.vercel.app',
           'https://c1.popads.net',
           'https://cdn.monetag.com',
           'https://a.monetag.com',
@@ -123,6 +123,7 @@ const corsOptions = {
       'https://www.moviefrost.com',
       'https://moviefrost-frontend.vercel.app',
       'https://moviefrost-frontend-*.vercel.app',
+      'https://frontend-next-ivory-nu.vercel.app',
       BACKEND_HOST,
     ];
     if (!origin) return callback(null, true);
