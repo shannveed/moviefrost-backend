@@ -1,36 +1,35 @@
 // backend/Controllers/UserController.js
-import asyncHandler from "express-async-handler";
-import User from "../Models/UserModel.js";
-import bcrypt from "bcryptjs";
-import { generateToken } from "../middlewares/Auth.js";
-import { google } from "googleapis";
+import asyncHandler from 'express-async-handler';
+import User from '../Models/UserModel.js';
+import bcrypt from 'bcryptjs';
+import { generateToken } from '../middlewares/Auth.js';
 
 /* ============================================================
-   ✅ Auth Cookie (for Next.js SSR admin preview)
+   Auth Cookie (for Next.js SSR admin preview)
    ============================================================ */
-const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "mf_token";
-const AUTH_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 1 day (matches JWT expiresIn)
+const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || 'mf_token';
+const AUTH_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 1 day
 
 const cookieOptions = () => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production", // https only in prod
-  sameSite: "lax",
-  path: "/",
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
   maxAge: AUTH_COOKIE_MAX_AGE_MS,
 });
 
 const clearCookieOptions = () => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax",
-  path: "/",
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
 });
 
 const setAuthCookie = (res, token) => {
   try {
     res.cookie(AUTH_COOKIE_NAME, token, cookieOptions());
   } catch (e) {
-    console.warn("[auth-cookie] failed to set cookie:", e?.message || e);
+    console.warn('[auth-cookie] failed to set cookie:', e?.message || e);
   }
 };
 
@@ -38,15 +37,112 @@ const clearAuthCookie = (res) => {
   try {
     res.clearCookie(AUTH_COOKIE_NAME, clearCookieOptions());
   } catch (e) {
-    console.warn("[auth-cookie] failed to clear cookie:", e?.message || e);
+    console.warn('[auth-cookie] failed to clear cookie:', e?.message || e);
   }
 };
 
-// Configure OAuth2 client
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET
-);
+/* ============================================================
+   Google OAuth helpers
+   ============================================================ */
+const GOOGLE_CLIENT_ID_RE =
+  /^[0-9]+-[a-z0-9_-]+\.apps\.googleusercontent\.com$/i;
+
+const GOOGLE_CLIENT_IDS = String(process.env.GOOGLE_CLIENT_ID || '')
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+const GOOGLE_TOKENINFO_URL = 'https://oauth2.googleapis.com/tokeninfo';
+const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
+
+const fetchJsonWithTimeout = async (url, init = {}, timeoutMs = 8000) => {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+
+    const data = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      const msg =
+        data?.error_description ||
+        data?.error ||
+        data?.message ||
+        `Google request failed: ${res.status}`;
+
+      const err = new Error(msg);
+      err.status = res.status;
+      throw err;
+    }
+
+    return data;
+  } finally {
+    clearTimeout(t);
+  }
+};
+
+const validateBackendGoogleConfig = () => {
+  if (!GOOGLE_CLIENT_IDS.length) {
+    throw new Error('Google OAuth is not configured. Set GOOGLE_CLIENT_ID in backend env.');
+  }
+
+  const invalid = GOOGLE_CLIENT_IDS.find((id) => !GOOGLE_CLIENT_ID_RE.test(id));
+
+  if (invalid) {
+    throw new Error(
+      'Backend GOOGLE_CLIENT_ID is invalid. Use full Web Client ID ending with .apps.googleusercontent.com'
+    );
+  }
+};
+
+const fetchGoogleUserFromAccessToken = async (accessToken) => {
+  validateBackendGoogleConfig();
+
+  const tokenInfoUrl = `${GOOGLE_TOKENINFO_URL}?access_token=${encodeURIComponent(
+    accessToken
+  )}`;
+
+  const tokenInfo = await fetchJsonWithTimeout(tokenInfoUrl);
+
+  const aud = String(tokenInfo?.aud || '').trim();
+
+  if (aud && !GOOGLE_CLIENT_IDS.includes(aud)) {
+    throw new Error(
+      'Google token was not issued for this OAuth client. Check frontend NEXT_PUBLIC_GOOGLE_CLIENT_ID and backend GOOGLE_CLIENT_ID.'
+    );
+  }
+
+  const userInfo = await fetchJsonWithTimeout(GOOGLE_USERINFO_URL, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
+  });
+
+  const email = String(userInfo?.email || '').trim().toLowerCase();
+  const fullName = String(userInfo?.name || '').trim();
+  const picture = String(userInfo?.picture || '').trim();
+  const googleSub = String(userInfo?.sub || tokenInfo?.sub || '').trim();
+
+  if (!email) {
+    throw new Error('Email not provided by Google');
+  }
+
+  if (userInfo?.email_verified === false) {
+    throw new Error('Google email is not verified');
+  }
+
+  return {
+    email,
+    fullName: fullName || email.split('@')[0],
+    picture,
+    googleSub: googleSub || email,
+  };
+};
 
 // @desc Register user
 // @route POST /api/users
@@ -54,10 +150,12 @@ const oauth2Client = new google.auth.OAuth2(
 const registerUser = asyncHandler(async (req, res) => {
   const { fullName, email, password, image } = req.body;
 
-  const userExists = await User.findOne({ email });
+  const cleanEmail = String(email || '').trim().toLowerCase();
+
+  const userExists = await User.findOne({ email: cleanEmail });
   if (userExists) {
     res.status(400);
-    throw new Error("User already exists");
+    throw new Error('User already exists');
   }
 
   const salt = await bcrypt.genSalt(10);
@@ -65,14 +163,14 @@ const registerUser = asyncHandler(async (req, res) => {
 
   const user = await User.create({
     fullName,
-    email,
+    email: cleanEmail,
     password: hashedPassword,
     image,
   });
 
   if (!user) {
     res.status(400);
-    throw new Error("Invalid user data");
+    throw new Error('Invalid user data');
   }
 
   const token = generateToken(user._id);
@@ -94,10 +192,13 @@ const registerUser = asyncHandler(async (req, res) => {
 const loginUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
-  const user = await User.findOne({ email });
+  const cleanEmail = String(email || '').trim().toLowerCase();
+
+  const user = await User.findOne({ email: cleanEmail });
+
   if (!user || !(await bcrypt.compare(password, user.password))) {
     res.status(401);
-    throw new Error("Invalid email or password");
+    throw new Error('Invalid email or password');
   }
 
   const token = generateToken(user._id);
@@ -113,16 +214,14 @@ const loginUser = asyncHandler(async (req, res) => {
   });
 });
 
-// ✅ NEW: Logout (clears cookie)
-// @desc Logout user (clear SSR cookie)
+// @desc Logout user
 // @route POST /api/users/logout
 // @access Public
 const logoutUser = asyncHandler(async (_req, res) => {
   clearAuthCookie(res);
-  res.status(200).json({ message: "Logged out" });
+  res.status(200).json({ message: 'Logged out' });
 });
 
-// * PRIVATE CONTROLLER
 // @desc Update user profile
 // @route PUT /api/users
 // @access Private
@@ -130,18 +229,22 @@ const updateUserProfile = asyncHandler(async (req, res) => {
   const { fullName, email, image } = req.body;
 
   const user = await User.findById(req.user._id);
+
   if (!user) {
     res.status(404);
-    throw new Error("User not found");
+    throw new Error('User not found');
   }
 
   user.fullName = fullName || user.fullName;
-  user.email = email || user.email;
+
+  if (email) {
+    user.email = String(email).trim().toLowerCase();
+  }
+
   user.image = image || user.image;
 
   const updatedUser = await user.save();
 
-  // keep existing token behavior (JWT is still returned)
   const token = generateToken(updatedUser._id);
   setAuthCookie(res, token);
 
@@ -155,15 +258,15 @@ const updateUserProfile = asyncHandler(async (req, res) => {
   });
 });
 
-//@desc Delete user profile
-//@route DELETE /api/users
-//@access Private
+// @desc Delete user profile
+// @route DELETE /api/users
+// @access Private
 const deleteUserProfile = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id);
 
   if (!user) {
     res.status(404);
-    throw new Error("User not found");
+    throw new Error('User not found');
   }
 
   if (user.isAdmin) {
@@ -174,12 +277,12 @@ const deleteUserProfile = asyncHandler(async (req, res) => {
   await user.deleteOne();
 
   clearAuthCookie(res);
-  res.json({ message: "User deleted successfully" });
+  res.json({ message: 'User deleted successfully' });
 });
 
-//@desc Change user password
-//@route PUT /api/users/password
-//@access Private
+// @desc Change user password
+// @route PUT /api/users/password
+// @access Private
 const changeUserPassword = asyncHandler(async (req, res) => {
   const { oldPassword, newPassword } = req.body;
 
@@ -187,15 +290,16 @@ const changeUserPassword = asyncHandler(async (req, res) => {
 
   if (!user || !(await bcrypt.compare(oldPassword, user.password))) {
     res.status(401);
-    throw new Error("Invalid old password");
+    throw new Error('Invalid old password');
   }
 
   const salt = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash(newPassword, salt);
+
   user.password = hashedPassword;
   await user.save();
 
-  res.json({ message: "Password changed!" });
+  res.json({ message: 'Password changed!' });
 });
 
 // @desc Login user with Google
@@ -206,36 +310,46 @@ const googleLogin = asyncHandler(async (req, res) => {
 
   if (!accessToken) {
     res.status(400);
-    throw new Error("Access token is required");
+    throw new Error('Access token is required');
   }
 
-  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-    res.status(500);
-    throw new Error("Google OAuth is not properly configured");
+  let googleUser;
+
+  try {
+    googleUser = await fetchGoogleUserFromAccessToken(accessToken);
+  } catch (e) {
+    res.status(e?.status === 400 || e?.status === 401 ? 401 : 400);
+    throw new Error(e?.message || 'Google login failed');
   }
 
-  oauth2Client.setCredentials({ access_token: accessToken });
-
-  const oauth2 = google.oauth2({ auth: oauth2Client, version: "v2" });
-  const { data } = await oauth2.userinfo.get();
-
-  const { email, name, picture, id } = data;
-
-  if (!email) {
-    res.status(400);
-    throw new Error("Email not provided by Google");
-  }
-
-  let user = await User.findOne({ email });
+  let user = await User.findOne({ email: googleUser.email });
 
   if (!user) {
-    const hashedPassword = await bcrypt.hash(id + process.env.JWT_SECRET, 10);
+    const seed =
+      googleUser.googleSub + String(process.env.JWT_SECRET || 'moviefrost');
+
+    const hashedPassword = await bcrypt.hash(seed, 10);
+
     user = await User.create({
-      fullName: name || email.split("@")[0],
-      email,
+      fullName: googleUser.fullName,
+      email: googleUser.email,
       password: hashedPassword,
-      image: picture || "",
+      image: googleUser.picture || '',
     });
+  } else {
+    let changed = false;
+
+    if (!user.image && googleUser.picture) {
+      user.image = googleUser.picture;
+      changed = true;
+    }
+
+    if (!user.fullName && googleUser.fullName) {
+      user.fullName = googleUser.fullName;
+      changed = true;
+    }
+
+    if (changed) await user.save();
   }
 
   const token = generateToken(user._id);
@@ -252,16 +366,18 @@ const googleLogin = asyncHandler(async (req, res) => {
 });
 
 /**
- @desc Get all liked movies
- @route GET /api/users/favorites
- @access Private
+ * @desc Get all liked movies
+ * @route GET /api/users/favorites
+ * @access Private
  */
 const getLikedMovies = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id).populate("likedMovies");
+  const user = await User.findById(req.user._id).populate('likedMovies');
+
   if (!user) {
     res.status(404);
-    throw new Error("User not found");
+    throw new Error('User not found');
   }
+
   res.json(user.likedMovies);
 });
 
@@ -272,14 +388,15 @@ const addLikedMovie = asyncHandler(async (req, res) => {
   const { movieId } = req.body;
 
   const user = await User.findById(req.user._id);
+
   if (!user) {
     res.status(404);
-    throw new Error("Movie not found");
+    throw new Error('User not found');
   }
 
   if (user.likedMovies.includes(movieId)) {
     res.status(400);
-    throw new Error("Movie already liked");
+    throw new Error('Movie already liked');
   }
 
   user.likedMovies.push(movieId);
@@ -288,28 +405,28 @@ const addLikedMovie = asyncHandler(async (req, res) => {
   res.json(user.likedMovies);
 });
 
-//@desc Delete all liked movies
-//@route DELETE /api/users/favorites
-//@access Private
+// @desc Delete all liked movies
+// @route DELETE /api/users/favorites
+// @access Private
 const deleteLikedMovies = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id);
+
   if (!user) {
     res.status(404);
-    throw new Error("User not found");
+    throw new Error('User not found');
   }
 
   user.likedMovies = [];
   await user.save();
 
-  res.json({ message: "All favorite movies deleted successfully" });
+  res.json({ message: 'All favorite movies deleted successfully' });
 });
 
-// * ADMIN CONTROLLERS *
 // @desc Get all users
 // @route GET /api/users
 // @access Private/Admin
 const getUsers = asyncHandler(async (_req, res) => {
-  const users = await User.find({}).select("-password");
+  const users = await User.find({}).select('-password');
   res.json(users);
 });
 
@@ -321,7 +438,7 @@ const deleteUser = asyncHandler(async (req, res) => {
 
   if (!user) {
     res.status(404);
-    throw new Error("User not found");
+    throw new Error('User not found');
   }
 
   if (user.isAdmin) {
@@ -330,13 +447,14 @@ const deleteUser = asyncHandler(async (req, res) => {
   }
 
   await user.deleteOne();
-  res.json({ message: "User deleted successfully" });
+
+  res.json({ message: 'User deleted successfully' });
 });
 
 export {
   registerUser,
   loginUser,
-  logoutUser, // ✅ NEW
+  logoutUser,
   updateUserProfile,
   deleteUserProfile,
   changeUserPassword,
