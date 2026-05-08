@@ -17,13 +17,14 @@ import {
 
 import { findMoviesByNamesAdmin } from '../Controllers/AdminMoviesLookupController.js';
 import { reorderLatestNewMovies } from '../Controllers/LatestNewReorderController.js';
+import { getMovieRedirectInfo } from '../Controllers/MovieRedirectInfoController.js';
 
 import {
   upsertMovieRating,
   createGuestMovieRating,
   getMovieRatings,
   getMyMovieRating,
-  deleteMovieRatingAdmin, // ✅ NEW
+  deleteMovieRatingAdmin,
 } from '../Controllers/RatingsController.js';
 
 import { syncTmdbCreditsAdmin } from '../Controllers/TmdbController.js';
@@ -52,6 +53,10 @@ router.get('/browseBy-distinct', moviesController.getDistinctBrowseBy);
 // RELATED (must be before "/:id")
 router.get('/related/:id', getRelatedMovies);
 
+// Lightweight redirect info for frontend middleware.
+// Must stay before "/:id".
+router.get('/redirect-info/:id', getMovieRedirectInfo);
+
 // ADMIN READ ROUTES (include unpublished / drafts)
 router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
 
@@ -59,7 +64,12 @@ router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
 router.post('/admin/tmdb/sync-credits', protect, admin, syncTmdbCreditsAdmin);
 
 // Admin Latest New list
-router.get('/admin/latest-new', protect, admin, moviesController.getLatestNewMoviesAdmin);
+router.get(
+  '/admin/latest-new',
+  protect,
+  admin,
+  moviesController.getLatestNewMoviesAdmin
+);
 
 // Admin Banner list
 router.get('/admin/banner', protect, admin, getBannerMoviesAdmin);
@@ -84,7 +94,7 @@ router.post('/:id/ratings/guest', createGuestMovieRating);
 // logged-in rating
 router.post('/:id/ratings', protect, upsertMovieRating);
 
-// ✅ NEW: admin delete rating (keep BELOW /me and /guest to avoid route conflicts)
+// admin delete rating (keep BELOW /me and /guest to avoid route conflicts)
 router.delete('/:id/ratings/:ratingId', protect, admin, deleteMovieRatingAdmin);
 
 // PUBLIC single movie (only published)
@@ -92,7 +102,12 @@ router.get('/:id', moviesController.getMovieById);
 
 // * PRIVATE ROUTES *
 router.post('/:id/reviews', protect, moviesController.createMovieReview);
-router.post('/:id/reviews/:reviewId/reply', protect, admin, moviesController.adminReplyReview);
+router.post(
+  '/:id/reviews/:reviewId/reply',
+  protect,
+  admin,
+  moviesController.adminReplyReview
+);
 
 // * ADMIN ROUTES *
 router.put('/bulk-exact', protect, admin, moviesController.bulkExactUpdateMovies);
@@ -100,18 +115,44 @@ router.post('/bulk-delete', protect, admin, moviesController.bulkDeleteByName);
 router.post('/bulk', protect, admin, moviesController.bulkCreateMovies);
 
 // set/unset Latest New flag
-router.post('/admin/latest-new', protect, admin, moviesController.setLatestNewMovies);
+router.post(
+  '/admin/latest-new',
+  protect,
+  admin,
+  moviesController.setLatestNewMovies
+);
 
 // reorder Latest New
-router.post('/admin/latest-new/reorder', protect, admin, reorderLatestNewMovies);
+router.post(
+  '/admin/latest-new/reorder',
+  protect,
+  admin,
+  reorderLatestNewMovies
+);
 
 // set/unset Banner flag
 router.post('/admin/banner', protect, admin, setBannerMovies);
 
-router.post('/admin/reorder-page', protect, admin, moviesController.reorderMoviesInPage);
-router.post('/admin/move-to-page', protect, admin, moviesController.moveMoviesToPage);
+router.post(
+  '/admin/reorder-page',
+  protect,
+  admin,
+  moviesController.reorderMoviesInPage
+);
 
-router.post('/admin/generate-slugs', protect, admin, moviesController.generateSlugsForAllMovies);
+router.post(
+  '/admin/move-to-page',
+  protect,
+  admin,
+  moviesController.moveMoviesToPage
+);
+
+router.post(
+  '/admin/generate-slugs',
+  protect,
+  admin,
+  moviesController.generateSlugsForAllMovies
+);
 
 router.put('/:id', protect, admin, moviesController.updateMovie);
 router.delete('/:id', protect, admin, moviesController.deleteMovie);
