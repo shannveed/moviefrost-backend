@@ -33,7 +33,8 @@ export const getMovieRedirectInfo = asyncHandler(async (req, res) => {
     throw new Error('Movie id or slug is required');
   }
 
-  const select = '_id slug type language isPublished';
+  const select =
+    '_id slug name type language browseBy category thumbnailInfo isPublished';
 
   let movie = null;
 
@@ -68,8 +69,12 @@ export const getMovieRedirectInfo = asyncHandler(async (req, res) => {
     .json({
       _id: movie._id,
       slug: clean(movie.slug),
+      name: clean(movie.name),
       type: clean(movie.type),
       language: clean(movie.language),
+      browseBy: clean(movie.browseBy),
+      category: clean(movie.category),
+      thumbnailInfo: clean(movie.thumbnailInfo),
       isPublished: movie.isPublished,
     });
 });

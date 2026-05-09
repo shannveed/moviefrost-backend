@@ -80,7 +80,7 @@ const FRONTEND_BASE_URL = normalizeOrigin(
 
 const BACKEND_HOST = normalizeOrigin(
   process.env.BACKEND_PUBLIC_URL || process.env.PUBLIC_BASE_URL,
-  'https://moviefrost-backend-peach.vercel.app'
+  'https://moviefrost-backend-ten.vercel.app'
 );
 
 /**

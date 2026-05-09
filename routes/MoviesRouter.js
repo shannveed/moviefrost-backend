@@ -54,7 +54,7 @@ router.get('/browseBy-distinct', moviesController.getDistinctBrowseBy);
 router.get('/related/:id', getRelatedMovies);
 
 // Lightweight redirect info for frontend middleware.
-// Must stay before "/:id".
+// MUST stay before "/:id".
 router.get('/redirect-info/:id', getMovieRedirectInfo);
 
 // ADMIN READ ROUTES (include unpublished / drafts)
