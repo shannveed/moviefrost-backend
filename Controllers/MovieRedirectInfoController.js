@@ -7,18 +7,22 @@ import Movie from '../Models/MoviesModel.js';
 // Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
 
-const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
-
 const clean = (value = '') => String(value ?? '').trim();
+
+const isValidObjectId = (value) => {
+  const id = clean(value);
+  return /^[a-f\d]{24}$/i.test(id) && mongoose.Types.ObjectId.isValid(id);
+};
 
 /**
  * PUBLIC
  * GET /api/movies/redirect-info/:id
  *
- * Lightweight movie lookup used by frontend middleware.
+ * Lightweight lookup used by frontend middleware.
+ *
  * Important:
  * - Does NOT increment viewCount
- * - Does NOT trigger TMDb/OMDb side effects
+ * - Does NOT trigger TMDb / OMDb side effects
  * - Only returns minimum fields needed for language-domain redirect
  */
 export const getMovieRedirectInfo = asyncHandler(async (req, res) => {
@@ -61,7 +65,13 @@ export const getMovieRedirectInfo = asyncHandler(async (req, res) => {
       'Cache-Control',
       'public, max-age=300, s-maxage=300, stale-while-revalidate=3600'
     )
-    .json(movie);
+    .json({
+      _id: movie._id,
+      slug: clean(movie.slug),
+      type: clean(movie.type),
+      language: clean(movie.language),
+      isPublished: movie.isPublished,
+    });
 });
 
 export default {
