@@ -1244,7 +1244,7 @@ const createMovie = asyncHandler(async (req, res) => {
   }
 });
 
-// PUBLIC: latest 15 (only published)
+// PUBLIC: latest 30 (only published)
 const getLatestMovies = asyncHandler(async (_req, res) => {
   try {
     const movies = await Movie.find(publicVisibilityFilter)
