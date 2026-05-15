@@ -1249,7 +1249,7 @@ const getLatestMovies = asyncHandler(async (_req, res) => {
   try {
     const movies = await Movie.find(publicVisibilityFilter)
       .sort({ createdAt: -1, _id: -1 })
-      .limit(50)
+      .limit(30)
       .select(PUBLIC_MOVIE_CARD_SELECT)
       .lean();
 
