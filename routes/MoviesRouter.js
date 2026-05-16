@@ -20,6 +20,13 @@ import { reorderLatestNewMovies } from '../Controllers/LatestNewReorderControlle
 import { getMovieRedirectInfo } from '../Controllers/MovieRedirectInfoController.js';
 
 import {
+  getPopularMovies,
+  getPopularMoviesAdmin,
+  setPopularMovies,
+  reorderPopularMovies,
+} from '../Controllers/PopularController.js';
+
+import {
   upsertMovieRating,
   createGuestMovieRating,
   getMovieRatings,
@@ -35,32 +42,34 @@ const router = express.Router();
 router.post('/import', moviesController.importMovies);
 router.get('/', moviesController.getMovies);
 
-// Sitemaps (legacy API path; main sitemaps are served at backend root via server.js)
+// Sitemaps
 router.get('/sitemap.xml', generateSitemap);
 
 router.get('/rated/top', moviesController.getTopRatedMovies);
 router.get('/random/all', moviesController.getRandomMovies);
 router.get('/latest', moviesController.getLatestMovies);
 
-// Latest New (HomeScreen tab)
+// Latest New
 router.get('/latest-new', moviesController.getLatestNewMovies);
 
-// Banner (HomeScreen Banner.js)
+// ✅ NEW: Popular tab list
+router.get('/popular', getPopularMovies);
+
+// Banner
 router.get('/banner', getBannerMovies);
 
 router.get('/browseBy-distinct', moviesController.getDistinctBrowseBy);
 
-// RELATED (must be before "/:id")
+// RELATED
 router.get('/related/:id', getRelatedMovies);
 
-// Lightweight redirect info for frontend middleware.
-// MUST stay before "/:id".
+// Lightweight redirect info
 router.get('/redirect-info/:id', getMovieRedirectInfo);
 
-// ADMIN READ ROUTES (include unpublished / drafts)
+// ADMIN READ ROUTES
 router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
 
-// TMDb credits sync (casts/director overwrite)
+// TMDb
 router.post('/admin/tmdb/sync-credits', protect, admin, syncTmdbCreditsAdmin);
 
 // Admin Latest New list
@@ -74,7 +83,10 @@ router.get(
 // Admin Banner list
 router.get('/admin/banner', protect, admin, getBannerMoviesAdmin);
 
-// ADMIN RELATED (must be before "/admin/:id")
+// ✅ NEW: Admin Popular list
+router.get('/admin/popular', protect, admin, getPopularMoviesAdmin);
+
+// ADMIN RELATED
 router.get('/admin/related/:id', protect, admin, getRelatedMoviesAdmin);
 
 // ADMIN: bulk lookup by exact names
@@ -83,21 +95,17 @@ router.post('/admin/find-by-names', protect, admin, findMoviesByNamesAdmin);
 router.get('/admin/:id', protect, admin, moviesController.getMovieByIdAdmin);
 
 /* ============================================================
-   Ratings routes (WatchPage -> Rating collection)
+   Ratings routes
    ============================================================ */
 router.get('/:id/ratings', getMovieRatings);
 router.get('/:id/ratings/me', protect, getMyMovieRating);
 
-// guest rating (no login)
 router.post('/:id/ratings/guest', createGuestMovieRating);
-
-// logged-in rating
 router.post('/:id/ratings', protect, upsertMovieRating);
 
-// admin delete rating (keep BELOW /me and /guest to avoid route conflicts)
 router.delete('/:id/ratings/:ratingId', protect, admin, deleteMovieRatingAdmin);
 
-// PUBLIC single movie (only published)
+// PUBLIC single movie
 router.get('/:id', moviesController.getMovieById);
 
 // * PRIVATE ROUTES *
@@ -114,7 +122,7 @@ router.put('/bulk-exact', protect, admin, moviesController.bulkExactUpdateMovies
 router.post('/bulk-delete', protect, admin, moviesController.bulkDeleteByName);
 router.post('/bulk', protect, admin, moviesController.bulkCreateMovies);
 
-// set/unset Latest New flag
+// Latest New
 router.post(
   '/admin/latest-new',
   protect,
@@ -122,7 +130,6 @@ router.post(
   moviesController.setLatestNewMovies
 );
 
-// reorder Latest New
 router.post(
   '/admin/latest-new/reorder',
   protect,
@@ -130,7 +137,17 @@ router.post(
   reorderLatestNewMovies
 );
 
-// set/unset Banner flag
+// ✅ NEW: Popular
+router.post('/admin/popular', protect, admin, setPopularMovies);
+
+router.post(
+  '/admin/popular/reorder',
+  protect,
+  admin,
+  reorderPopularMovies
+);
+
+// Banner
 router.post('/admin/banner', protect, admin, setBannerMovies);
 
 router.post(
