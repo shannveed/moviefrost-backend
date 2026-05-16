@@ -80,7 +80,7 @@ const FRONTEND_BASE_URL = normalizeOrigin(
 
 const BACKEND_HOST = normalizeOrigin(
   process.env.BACKEND_PUBLIC_URL || process.env.PUBLIC_BASE_URL,
-  'https://moviefrost-backend-ten.vercel.app'
+  'https://moviefrost-backend-three.vercel.app'
 );
 
 /**
@@ -109,8 +109,8 @@ const DEFAULT_ALLOWED_ORIGINS = uniqueList([
   // Existing/possible Vercel deployments
   'https://moviefrost-frontend.vercel.app',
   'https://moviefrost-frontend-*.vercel.app',
-  'https://frontend-next-ivory-nu.vercel.app',
-  'https://moviefrost-frontend-next-ivory-nu*.vercel.app',
+  'https://frontend-next-umber-two.vercel.app',
+  'https://moviefrost-frontend-next-umber-two*.vercel.app',
 
   FRONTEND_BASE_URL,
   BACKEND_HOST,
