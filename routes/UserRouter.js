@@ -9,10 +9,12 @@ import {
   getLikedMovies,
   getUsers,
   loginUser,
-  logoutUser, // ✅ NEW
+  logoutUser,
   registerUser,
   googleLogin,
   updateUserProfile,
+  verifyEmail,
+  resendVerificationEmail,
 } from "../Controllers/UserController.js";
 import { admin, protect } from "../middlewares/Auth.js";
 
@@ -22,14 +24,17 @@ const router = express.Router();
 router.post("/", registerUser);
 router.post("/login", loginUser);
 router.post("/google-login", googleLogin);
-
-// ✅ NEW: logout clears mf_token cookie for Next SSR
 router.post("/logout", logoutUser);
+
+// Email verification
+router.get("/verify-email", verifyEmail);
 
 // * PRIVATE ROUTES *
 router.put("/", protect, updateUserProfile);
 router.delete("/", protect, deleteUserProfile);
 router.put("/password", protect, changeUserPassword);
+router.post("/resend-verification", protect, resendVerificationEmail);
+
 router.get("/favorites", protect, getLikedMovies);
 router.post("/favorites", protect, addLikedMovie);
 router.delete("/favorites", protect, deleteLikedMovies);
