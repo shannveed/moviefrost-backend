@@ -1,16 +1,16 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const UserSchema = mongoose.Schema(
     {
         fullName: {
             type: String,
-            required: [true, 'Please add a full name'],
+            required: [true, "Please add a full name"],
             trim: true,
         },
 
         email: {
             type: String,
-            required: [true, 'Please add an email'],
+            required: [true, "Please add an email"],
             unique: true,
             trim: true,
             lowercase: true,
@@ -19,13 +19,13 @@ const UserSchema = mongoose.Schema(
 
         password: {
             type: String,
-            required: [true, 'Please add a password'],
-            minlength: [6, 'Password must be at least 6 characters'],
+            required: [true, "Please add a password"],
+            minlength: [6, "Password must be at least 6 characters"],
         },
 
         image: {
             type: String,
-            default: '',
+            default: "",
         },
 
         isAdmin: {
@@ -37,7 +37,7 @@ const UserSchema = mongoose.Schema(
         likedMovies: [
             {
                 type: mongoose.Schema.Types.ObjectId,
-                ref: 'Movie',
+                ref: "Movie",
             },
         ],
 
@@ -52,7 +52,7 @@ const UserSchema = mongoose.Schema(
 
         emailVerificationToken: {
             type: String,
-            default: '',
+            default: "",
             index: true,
         },
 
@@ -75,25 +75,25 @@ const UserSchema = mongoose.Schema(
 
         referredBy: {
             type: mongoose.Schema.Types.ObjectId,
-            ref: 'User',
+            ref: "User",
             default: null,
             index: true,
         },
 
         registrationIp: {
             type: String,
-            default: '',
+            default: "",
             index: true,
         },
 
         registrationUserAgent: {
             type: String,
-            default: '',
+            default: "",
         },
 
         referralDeviceId: {
             type: String,
-            default: '',
+            default: "",
             index: true,
         },
 
@@ -114,30 +114,6 @@ const UserSchema = mongoose.Schema(
                 default: null,
             },
         },
-
-        rewardActivity: {
-            activeDays: {
-                type: [String],
-                default: [],
-            },
-
-            watchSeconds: {
-                type: Number,
-                default: 0,
-            },
-
-            watchedMovieIds: [
-                {
-                    type: mongoose.Schema.Types.ObjectId,
-                    ref: 'Movie',
-                },
-            ],
-
-            lastActivityAt: {
-                type: Date,
-                default: null,
-            },
-        },
     },
     {
         timestamps: true,
@@ -147,4 +123,4 @@ const UserSchema = mongoose.Schema(
 UserSchema.index({ registrationIp: 1, createdAt: -1 });
 UserSchema.index({ referralDeviceId: 1, createdAt: -1 });
 
-export default mongoose.models.User || mongoose.model('User', UserSchema);
+export default mongoose.models.User || mongoose.model("User", UserSchema);

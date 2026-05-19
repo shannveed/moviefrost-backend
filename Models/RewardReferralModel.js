@@ -33,15 +33,9 @@ const rewardReferralSchema = mongoose.Schema(
       lowercase: true,
     },
 
-    /**
-     * pending  = waiting email/activity
-     * review   = medium-risk referral, admin/manual review
-     * qualified = counted for reward
-     * rejected = high-risk/self/blocked
-     */
     status: {
       type: String,
-      enum: ['pending', 'review', 'qualified', 'rejected'],
+      enum: ['pending', 'qualified', 'rejected'],
       default: 'pending',
       index: true,
     },
@@ -70,22 +64,6 @@ const rewardReferralSchema = mongoose.Schema(
       default: '',
     },
 
-    riskScore: {
-      type: Number,
-      default: 0,
-      index: true,
-    },
-
-    riskSignals: {
-      type: [String],
-      default: [],
-    },
-
-    activityQualifiedAt: {
-      type: Date,
-      default: null,
-    },
-
     qualifiedAt: {
       type: Date,
       default: null,
@@ -97,22 +75,60 @@ const rewardReferralSchema = mongoose.Schema(
       default: null,
     },
 
-    reviewedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      default: null,
+    /* ============================================================
+       Soft fraud scoring
+       ============================================================ */
+    riskScore: {
+      type: Number,
+      default: 0,
+      index: true,
     },
 
-    reviewedAt: {
+    riskSignals: {
+      type: [String],
+      default: [],
+    },
+
+    riskDecision: {
+      type: String,
+      enum: ['', 'allow', 'pending', 'reject'],
+      default: '',
+      index: true,
+    },
+
+    riskCheckedAt: {
       type: Date,
       default: null,
     },
 
-    reviewNote: {
-      type: String,
-      default: '',
-      trim: true,
-      maxlength: 500,
+    /* ============================================================
+       2-day invited-user bonus activity requirement
+       User must spend 5 min on site OR 5 min watching.
+       ============================================================ */
+    activitySeconds: {
+      type: Number,
+      default: 0,
+    },
+
+    watchSeconds: {
+      type: Number,
+      default: 0,
+    },
+
+    activityLastTrackedAt: {
+      type: Date,
+      default: null,
+    },
+
+    bonusRequirementSeconds: {
+      type: Number,
+      default: 300,
+    },
+
+    bonusRequirementMetAt: {
+      type: Date,
+      default: null,
+      index: true,
     },
   },
   { timestamps: true }
@@ -121,6 +137,7 @@ const rewardReferralSchema = mongoose.Schema(
 rewardReferralSchema.index({ referrer: 1, status: 1, createdAt: -1 });
 rewardReferralSchema.index({ referrer: 1, deviceId: 1 });
 rewardReferralSchema.index({ referrer: 1, ip: 1, status: 1 });
+rewardReferralSchema.index({ referredUser: 1, bonusGrantedAt: 1 });
 
 export default mongoose.models.RewardReferral ||
   mongoose.model('RewardReferral', rewardReferralSchema);

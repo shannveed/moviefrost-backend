@@ -8,6 +8,25 @@ const FRONTEND_BASE_URL = String(
   process.env.PUBLIC_FRONTEND_URL || 'https://www.moviefrost.com'
 ).replace(/\/+$/, '');
 
+const RISK_PENDING_SCORE = Number(process.env.REFERRAL_RISK_PENDING_SCORE || 50);
+const RISK_REJECT_SCORE = Number(process.env.REFERRAL_RISK_REJECT_SCORE || 80);
+
+// Allows 1–2 real household referrals before same-IP cap becomes strict.
+const HOUSEHOLD_IP_QUALIFIED_LIMIT = Math.max(
+  1,
+  Number(process.env.REFERRAL_HOUSEHOLD_IP_QUALIFIED_LIMIT || 2)
+);
+
+const REFERRED_BONUS_ACTIVITY_SECONDS = Math.max(
+  60,
+  Number(process.env.REFERRED_BONUS_ACTIVITY_SECONDS || 300)
+);
+
+const ACTIVITY_INCREMENT_MAX_SECONDS = Math.max(
+  10,
+  Number(process.env.REWARD_ACTIVITY_INCREMENT_MAX_SECONDS || 60)
+);
+
 export const REWARD_TIERS = {
   WEEK: {
     tier: 3,
@@ -23,29 +42,11 @@ export const REWARD_TIERS = {
   },
 };
 
-const RISK_REVIEW_MIN = Number(process.env.REWARD_RISK_REVIEW_MIN || 50);
-const RISK_REJECT_OVER = Number(process.env.REWARD_RISK_REJECT_OVER || 80);
-const MAX_QUALIFIED_PER_HOUSEHOLD_IP = Number(
-  process.env.REWARD_MAX_QUALIFIED_PER_IP || 2
-);
-
-const WATCH_SECONDS_REQUIRED = Number(
-  process.env.REWARD_WATCH_SECONDS_REQUIRED || 300
-);
-
-const ACTIVE_DAYS_REQUIRED = Number(
-  process.env.REWARD_ACTIVE_DAYS_REQUIRED || 2
-);
-
 const addDays = (date, days) =>
   new Date(new Date(date).getTime() + Number(days) * 24 * 60 * 60 * 1000);
 
-const unique = (arr = []) =>
-  Array.from(new Set((arr || []).map((x) => String(x || '').trim()).filter(Boolean)));
-
-const isoDay = (date = new Date()) => new Date(date).toISOString().slice(0, 10);
-
-const isValidObjectIdString = (value = '') => /^[a-f\d]{24}$/i.test(String(value || ''));
+const escapeRegex = (value = '') =>
+  String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export const normalizeReferralCode = (value = '') =>
   String(value || '')
@@ -75,22 +76,57 @@ export const getClientIp = (req) => {
   return String(raw || '').replace(/^::ffff:/, '').trim().slice(0, 100);
 };
 
-const ipv4Subnet24 = (ip = '') => {
-  const clean = String(ip || '').trim();
-  const parts = clean.split('.');
+const getIpv4Prefix24 = (ip = '') => {
+  const m = String(ip || '').trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+  if (!m) return '';
+  return `${m[1]}.${m[2]}.${m[3]}`;
+};
 
-  if (parts.length !== 4) return '';
+const truthyHeader = (value = '') => {
+  const v = String(value || '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'y', 'vpn', 'proxy', 'datacenter'].includes(v);
+};
 
-  const nums = parts.map((part) => Number(part));
-  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return '';
+const hasVpnOrProxySignal = (req) => {
+  // Optional future support if you add Cloudflare/IP intelligence/proxy headers.
+  // VPN alone is NOT rejected. It adds moderate risk and usually becomes pending only
+  // if combined with another signal.
+  const headers = req?.headers || {};
 
-  return `${nums[0]}.${nums[1]}.${nums[2]}`;
+  return (
+    truthyHeader(headers['x-vpn-detected']) ||
+    truthyHeader(headers['x-proxy-detected']) ||
+    truthyHeader(headers['x-datacenter-ip']) ||
+    truthyHeader(headers['x-moviefrost-vpn-risk'])
+  );
+};
+
+const addRiskSignal = (state, points, signal) => {
+  if (!signal || state.signalSet.has(signal)) return;
+
+  state.signalSet.add(signal);
+  state.signals.push(signal);
+  state.score += Number(points) || 0;
+};
+
+const getRiskDecision = (score) => {
+  if (score >= RISK_REJECT_SCORE) return 'reject';
+  if (score >= RISK_PENDING_SCORE) return 'pending';
+  return 'allow';
+};
+
+const getRiskReason = ({ decision, signals = [] }) => {
+  if (decision === 'reject') return 'fraud_score_rejected';
+  if (decision === 'pending') {
+    if (signals.includes('vpn_or_proxy_signal')) return 'vpn_review_pending';
+    return 'manual_review_risk_score';
+  }
+  return '';
 };
 
 export const createUniqueReferralCode = async () => {
   for (let i = 0; i < 20; i += 1) {
     const code = `MF${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-
     // eslint-disable-next-line no-await-in-loop
     const exists = await User.exists({ referralCode: code });
     if (!exists) return code;
@@ -161,27 +197,6 @@ export const extendUserAdFree = async (userDoc, days = 0) => {
   return nextUntil;
 };
 
-const grantReferredUserBonusIfNeeded = async (userDoc, referralDoc) => {
-  if (!userDoc || !referralDoc) return null;
-
-  if (referralDoc.bonusGrantedAt) return userDoc?.reward?.adFreeUntil || null;
-
-  const until = await extendUserAdFree(userDoc, 2);
-
-  referralDoc.bonusGrantedAt = new Date();
-  await referralDoc.save();
-
-  userDoc.reward = {
-    ...(userDoc.reward || {}),
-    referredBonusGrantedAt: referralDoc.bonusGrantedAt,
-  };
-
-  userDoc.markModified('reward');
-  await userDoc.save();
-
-  return until;
-};
-
 const getRegistrationDayRange = (userDoc) => {
   const base = userDoc?.createdAt ? new Date(userDoc.createdAt) : new Date();
 
@@ -194,240 +209,210 @@ const getRegistrationDayRange = (userDoc) => {
   return { start, end };
 };
 
-export const getRewardActivityInfo = (userDoc) => {
-  const activeDays = unique(userDoc?.rewardActivity?.activeDays || []);
-  const watchSeconds = Math.max(0, Number(userDoc?.rewardActivity?.watchSeconds || 0));
-  const watchedMovieIds = Array.isArray(userDoc?.rewardActivity?.watchedMovieIds)
-    ? userDoc.rewardActivity.watchedMovieIds.map(String).filter(Boolean)
-    : [];
-
-  const hasWatchActivity =
-    watchSeconds >= WATCH_SECONDS_REQUIRED || watchedMovieIds.length >= 1;
-
-  const hasActiveDays = activeDays.length >= ACTIVE_DAYS_REQUIRED;
-
-  return {
-    activeDays,
-    activeDaysCount: activeDays.length,
-    activeDaysRequired: ACTIVE_DAYS_REQUIRED,
-
-    watchSeconds,
-    watchSecondsRequired: WATCH_SECONDS_REQUIRED,
-    watchedMovieIds,
-
-    hasWatchActivity,
-    hasActiveDays,
-
-    qualified: hasWatchActivity && hasActiveDays,
-  };
-};
-
-const addRisk = (ctx, points, signal) => {
-  ctx.score += Number(points) || 0;
-  if (signal) ctx.signals.push(signal);
-};
-
-export const calculateReferralRisk = async ({
+/**
+ * Soft scoring instead of single hard blocks.
+ *
+ * Score < 50  => allow
+ * 50–79       => pending review
+ * >= 80       => reject
+ *
+ * Same IP alone is allowed because families share WiFi.
+ * Rejection requires multiple strong signals.
+ */
+export const assessReferralRisk = async ({
   userDoc,
   referrerDoc,
   req = null,
   deviceId = '',
   ipOverride = '',
-  emailVerified = false,
 } = {}) => {
-  const ctx = {
+  const state = {
     score: 0,
     signals: [],
+    signalSet: new Set(),
   };
 
-  const userIp = String(ipOverride || userDoc?.registrationIp || getClientIp(req)).trim();
-  const referrerIp = String(referrerDoc?.registrationIp || '').trim();
-
+  const ip = String(ipOverride || userDoc?.registrationIp || getClientIp(req)).trim();
   const device = normalizeDeviceId(deviceId || userDoc?.referralDeviceId);
-  const referrerDevice = normalizeDeviceId(referrerDoc?.referralDeviceId);
 
   if (!userDoc?._id || !referrerDoc?._id) {
-    addRisk(ctx, 100, 'invalid_referral_users');
-    return ctx;
+    return {
+      ok: false,
+      decision: 'reject',
+      score: 999,
+      signals: ['invalid_referral_users'],
+      reason: 'invalid_referral_users',
+    };
   }
 
   if (String(userDoc._id) === String(referrerDoc._id)) {
-    addRisk(ctx, 100, 'self_referral');
-    return ctx;
+    return {
+      ok: false,
+      decision: 'reject',
+      score: 999,
+      signals: ['self_referral'],
+      reason: 'self_referral',
+    };
   }
 
-  if (userIp && referrerIp) {
-    if (userIp === referrerIp) {
-      addRisk(ctx, 40, 'same_exact_ip');
-    } else {
-      const userSubnet = ipv4Subnet24(userIp);
-      const refSubnet = ipv4Subnet24(referrerIp);
+  const { start, end } = getRegistrationDayRange(userDoc);
 
-      if (userSubnet && refSubnet && userSubnet === refSubnet) {
-        addRisk(ctx, 15, 'same_ipv4_24_subnet');
+  if (ip) {
+    const sameIpAccounts = await User.countDocuments({
+      _id: { $ne: userDoc._id },
+      registrationIp: ip,
+      createdAt: { $gte: start, $lt: end },
+    });
+
+    const sameIpAsReferrer =
+      referrerDoc?.registrationIp && String(referrerDoc.registrationIp) === ip;
+
+    if (sameIpAccounts > 0 || sameIpAsReferrer) {
+      // Same WiFi alone should still qualify.
+      addRiskSignal(state, 40, 'same_exact_ip');
+    }
+
+    const sameHouseholdQualified = await RewardReferral.countDocuments({
+      referrer: referrerDoc._id,
+      referredUser: { $ne: userDoc._id },
+      ip,
+      status: 'qualified',
+    });
+
+    if (sameHouseholdQualified >= HOUSEHOLD_IP_QUALIFIED_LIMIT) {
+      addRiskSignal(state, 45, 'household_ip_referral_limit');
+    }
+
+    const prefix24 = getIpv4Prefix24(ip);
+    if (prefix24) {
+      const sameSubnetAccounts = await User.countDocuments({
+        _id: { $ne: userDoc._id },
+        registrationIp: new RegExp(`^${escapeRegex(prefix24)}\\.`),
+        createdAt: { $gte: start, $lt: end },
+      });
+
+      if (sameSubnetAccounts > sameIpAccounts) {
+        addRiskSignal(state, 15, 'same_24_subnet');
       }
     }
   }
 
-  if (userIp && referrerDoc?._id) {
-    const qualifiedSameIp = await RewardReferral.countDocuments({
-      referrer: referrerDoc._id,
-      status: 'qualified',
-      ip: userIp,
-      referredUser: { $ne: userDoc._id },
-    });
-
-    // Allow 1-2 same household referrals. Third+ gets high risk.
-    if (qualifiedSameIp >= MAX_QUALIFIED_PER_HOUSEHOLD_IP) {
-      addRisk(ctx, 45, 'household_ip_cap_reached');
-    }
-  }
-
   if (device) {
-    if (referrerDevice && device === referrerDevice) {
-      addRisk(ctx, 50, 'same_device_as_referrer');
-    } else {
-      const idsToExclude = [userDoc._id, referrerDoc._id].filter(Boolean);
+    const sameDeviceAsReferrer =
+      referrerDoc?.referralDeviceId &&
+      String(referrerDoc.referralDeviceId) === String(device);
 
+    if (sameDeviceAsReferrer) {
+      addRiskSignal(state, 50, 'same_device_as_referrer');
+    } else {
       const duplicateDeviceUser = await User.findOne({
-        _id: { $nin: idsToExclude },
+        _id: { $ne: userDoc._id },
         referralDeviceId: device,
       })
         .select('_id')
         .lean();
 
       if (duplicateDeviceUser) {
-        addRisk(ctx, 50, 'duplicate_device_fingerprint');
+        addRiskSignal(state, 50, 'duplicate_device');
       }
     }
   }
 
-  const createdAt = userDoc?.createdAt ? new Date(userDoc.createdAt).getTime() : 0;
-  if (createdAt && Date.now() - createdAt < 5 * 60 * 1000) {
-    addRisk(ctx, 20, 'account_age_under_5_min');
+  if (hasVpnOrProxySignal(req)) {
+    // VPN alone should not auto-reject.
+    addRiskSignal(state, 25, 'vpn_or_proxy_signal');
   }
 
-  if (!emailVerified) {
-    addRisk(ctx, 30, 'email_not_verified');
-  }
+  const decision = getRiskDecision(state.score);
+  const reason = getRiskReason({ decision, signals: state.signals });
 
   return {
-    score: ctx.score,
-    signals: unique(ctx.signals),
+    ok: decision !== 'reject',
+    decision,
+    score: state.score,
+    signals: state.signals,
+    reason,
   };
 };
 
-const decideReferralStatus = ({
-  emailVerified = false,
-  activityQualified = false,
-  score = 0,
-} = {}) => {
+const applyRiskFields = (referralDoc, risk) => {
+  referralDoc.riskScore = Number(risk?.score || 0);
+  referralDoc.riskSignals = Array.isArray(risk?.signals) ? risk.signals : [];
+  referralDoc.riskDecision = risk?.decision || '';
+  referralDoc.riskCheckedAt = new Date();
+};
+
+const buildStatusFromRiskAndVerification = ({ risk, emailVerified }) => {
+  if (risk?.decision === 'reject') {
+    return {
+      status: 'rejected',
+      reason: risk?.reason || 'fraud_score_rejected',
+      qualifiedAt: null,
+    };
+  }
+
   if (!emailVerified) {
     return {
       status: 'pending',
       reason: 'pending_email_verification',
+      qualifiedAt: null,
     };
   }
 
-  if (score > RISK_REJECT_OVER) {
-    return {
-      status: 'rejected',
-      reason: 'high_risk_score',
-    };
-  }
-
-  if (score >= RISK_REVIEW_MIN) {
-    return {
-      status: 'review',
-      reason: 'manual_review_required',
-    };
-  }
-
-  if (!activityQualified) {
+  if (risk?.decision === 'pending') {
     return {
       status: 'pending',
-      reason: 'pending_activity',
+      reason: risk?.reason || 'manual_review_risk_score',
+      qualifiedAt: null,
     };
   }
 
   return {
     status: 'qualified',
     reason: '',
+    qualifiedAt: new Date(),
   };
 };
 
-const reevaluateReferralDocument = async (referralDoc, userDoc) => {
-  if (!referralDoc || !userDoc) {
-    return { changed: false, reason: 'missing_referral_or_user' };
+const isReferralBonusEligible = (referralDoc) => {
+  if (!referralDoc) return false;
+
+  // New users count only after qualifying.
+  if (referralDoc.status === 'qualified') return true;
+
+  // Existing accounts do not count for referrer, but can receive the 2-day bonus.
+  if (
+    referralDoc.status === 'rejected' &&
+    referralDoc.reason === 'existing_account_not_counted'
+  ) {
+    return true;
   }
 
-  // Keep manual decisions stable.
-  if (referralDoc.reason === 'manual_rejected') {
-    return { changed: false, reason: 'manual_rejected' };
-  }
+  return false;
+};
 
-  if (referralDoc.status === 'qualified') {
-    return { changed: false, reason: 'already_qualified' };
-  }
+const grantReferredUserBonusIfNeeded = async (userDoc, referralDoc) => {
+  if (!userDoc || !referralDoc) return null;
 
-  const referrer = await User.findById(referralDoc.referrer);
+  if (referralDoc.bonusGrantedAt) return userDoc?.reward?.adFreeUntil || null;
+  if (userDoc?.reward?.referredBonusGrantedAt) return userDoc?.reward?.adFreeUntil || null;
 
-  if (!referrer) {
-    referralDoc.status = 'rejected';
-    referralDoc.reason = 'referrer_not_found';
-    referralDoc.riskScore = 100;
-    referralDoc.riskSignals = ['referrer_not_found'];
-    await referralDoc.save();
+  const until = await extendUserAdFree(userDoc, 2);
 
-    return { changed: true, status: 'rejected', reason: 'referrer_not_found' };
-  }
-
-  const risk = await calculateReferralRisk({
-    userDoc,
-    referrerDoc: referrer,
-    deviceId: referralDoc.deviceId,
-    ipOverride: referralDoc.ip,
-    emailVerified: !!userDoc.emailVerified,
-  });
-
-  const activity = getRewardActivityInfo(userDoc);
-
-  const decision = decideReferralStatus({
-    emailVerified: !!userDoc.emailVerified,
-    activityQualified: activity.qualified,
-    score: risk.score,
-  });
-
-  referralDoc.riskScore = risk.score;
-  referralDoc.riskSignals = risk.signals;
-
-  referralDoc.status = decision.status;
-  referralDoc.reason = decision.reason;
-
-  if (activity.qualified && !referralDoc.activityQualifiedAt) {
-    referralDoc.activityQualifiedAt = new Date();
-  }
-
-  if (decision.status === 'qualified') {
-    referralDoc.qualifiedAt = referralDoc.qualifiedAt || new Date();
-  } else {
-    referralDoc.qualifiedAt = null;
-  }
-
+  referralDoc.bonusGrantedAt = new Date();
+  referralDoc.bonusRequirementMetAt = referralDoc.bonusRequirementMetAt || new Date();
   await referralDoc.save();
 
-  // The invited user receives their 2-day bonus if referral is not rejected.
-  if (decision.status !== 'rejected') {
-    await grantReferredUserBonusIfNeeded(userDoc, referralDoc);
-  }
-
-  return {
-    changed: true,
-    status: referralDoc.status,
-    reason: referralDoc.reason,
-    risk,
-    activity,
+  userDoc.reward = {
+    ...(userDoc.reward || {}),
+    referredBonusGrantedAt: referralDoc.bonusGrantedAt,
+    adFreeUntil: until,
   };
+
+  userDoc.markModified('reward');
+  await userDoc.save();
+
+  return until;
 };
 
 export const processReferralForNewUser = async ({
@@ -438,9 +423,7 @@ export const processReferralForNewUser = async ({
   emailVerified = false,
 } = {}) => {
   const code = normalizeReferralCode(referralCode);
-  if (!userDoc?._id || !code) {
-    return { applied: false, reason: 'no_referral_code' };
-  }
+  if (!userDoc?._id || !code) return { applied: false, reason: 'no_referral_code' };
 
   const existing = await RewardReferral.findOne({
     referredUser: userDoc._id,
@@ -466,66 +449,125 @@ export const processReferralForNewUser = async ({
   userDoc.referredBy = referrer._id;
   userDoc.registrationIp = userDoc.registrationIp || ip;
   userDoc.registrationUserAgent =
-    userDoc.registrationUserAgent ||
-    String(req?.headers?.['user-agent'] || '').slice(0, 500);
+    userDoc.registrationUserAgent || String(req?.headers?.['user-agent'] || '').slice(0, 500);
 
   if (device && !userDoc.referralDeviceId) {
     userDoc.referralDeviceId = device;
   }
 
-  if (emailVerified) {
-    userDoc.emailVerified = true;
-  }
-
   await userDoc.save();
+
+  const risk = await assessReferralRisk({
+    userDoc,
+    referrerDoc: referrer,
+    req,
+    deviceId: device,
+    ipOverride: ip,
+  });
+
+  const statusInfo = buildStatusFromRiskAndVerification({
+    risk,
+    emailVerified,
+  });
 
   const referralDoc = await RewardReferral.create({
     referrer: referrer._id,
     referredUser: userDoc._id,
     referralCode: code,
     referredEmail: String(userDoc.email || '').toLowerCase(),
-    status: 'pending',
-    reason: emailVerified ? 'pending_activity' : 'pending_email_verification',
+    status: statusInfo.status,
+    reason: statusInfo.reason,
     ip,
     deviceId: device,
     userAgent: String(req?.headers?.['user-agent'] || '').slice(0, 500),
+    qualifiedAt: statusInfo.qualifiedAt,
+
+    riskScore: risk.score,
+    riskSignals: risk.signals,
+    riskDecision: risk.decision,
+    riskCheckedAt: new Date(),
+
+    bonusRequirementSeconds: REFERRED_BONUS_ACTIVITY_SECONDS,
   });
 
-  const evaluation = await reevaluateReferralDocument(referralDoc, userDoc);
-
   return {
-    applied: evaluation.status !== 'rejected',
-    status: evaluation.status,
-    reason: evaluation.reason,
-    bonusUntil: userDoc?.reward?.adFreeUntil || null,
-    risk: evaluation.risk,
-    activity: evaluation.activity,
+    applied: statusInfo.status !== 'rejected',
+    status: referralDoc.status,
+    reason: referralDoc.reason,
+    riskScore: referralDoc.riskScore,
+    riskSignals: referralDoc.riskSignals,
+    bonusPendingActivity:
+      referralDoc.status === 'qualified'
+        ? {
+          requiredSeconds: REFERRED_BONUS_ACTIVITY_SECONDS,
+          message:
+            'Spend 5 minutes on MovieFrost or watch any video for 5 minutes to unlock your 2-day ad-free reward.',
+        }
+        : null,
   };
 };
 
 export const qualifyPendingReferralForUser = async (userDoc) => {
-  if (!userDoc?._id) {
-    return { qualified: false, reason: 'no_user' };
+  if (!userDoc?._id || !userDoc.emailVerified) {
+    return { qualified: false, reason: 'email_not_verified' };
   }
 
   const referralDoc = await RewardReferral.findOne({
     referredUser: userDoc._id,
-    status: { $in: ['pending', 'review'] },
+    status: 'pending',
   });
 
   if (!referralDoc) {
     return { qualified: false, reason: 'no_pending_referral' };
   }
 
-  const evaluation = await reevaluateReferralDocument(referralDoc, userDoc);
+  const referrer = await User.findById(referralDoc.referrer);
+
+  if (!referrer) {
+    referralDoc.status = 'rejected';
+    referralDoc.reason = 'referrer_not_found';
+    referralDoc.qualifiedAt = null;
+    await referralDoc.save();
+
+    return { qualified: false, reason: 'referrer_not_found' };
+  }
+
+  const risk = await assessReferralRisk({
+    userDoc,
+    referrerDoc: referrer,
+    deviceId: referralDoc.deviceId,
+    ipOverride: referralDoc.ip,
+  });
+
+  applyRiskFields(referralDoc, risk);
+
+  const statusInfo = buildStatusFromRiskAndVerification({
+    risk,
+    emailVerified: true,
+  });
+
+  referralDoc.status = statusInfo.status;
+  referralDoc.reason = statusInfo.reason;
+  referralDoc.qualifiedAt = statusInfo.qualifiedAt;
+
+  await referralDoc.save();
+
+  if (referralDoc.status !== 'qualified') {
+    return {
+      qualified: false,
+      reason: referralDoc.reason,
+      riskScore: referralDoc.riskScore,
+      riskSignals: referralDoc.riskSignals,
+    };
+  }
 
   return {
-    qualified: evaluation.status === 'qualified',
-    status: evaluation.status,
-    reason: evaluation.reason,
-    bonusUntil: userDoc?.reward?.adFreeUntil || null,
-    risk: evaluation.risk,
-    activity: evaluation.activity,
+    qualified: true,
+    bonusPendingActivity: {
+      requiredSeconds: REFERRED_BONUS_ACTIVITY_SECONDS,
+      message:
+        'Spend 5 minutes on MovieFrost or watch any video for 5 minutes to unlock your 2-day ad-free reward.',
+    },
   };
 };
 
@@ -536,9 +578,7 @@ export const applyReferralToExistingUser = async ({
   req = null,
 } = {}) => {
   const code = normalizeReferralCode(referralCode);
-  if (!userDoc?._id || !code) {
-    return { applied: false, reason: 'no_referral_code' };
-  }
+  if (!userDoc?._id || !code) return { applied: false, reason: 'no_referral_code' };
 
   if (userDoc.referredBy) {
     return { applied: false, reason: 'already_referred' };
@@ -569,86 +609,84 @@ export const applyReferralToExistingUser = async ({
 
   await userDoc.save();
 
+  const risk = await assessReferralRisk({
+    userDoc,
+    referrerDoc: referrer,
+    req,
+    deviceId: device,
+    ipOverride: ip,
+  });
+
+  const fraudRejected = risk.decision === 'reject';
+
   const referralDoc = await RewardReferral.create({
     referrer: referrer._id,
     referredUser: userDoc._id,
     referralCode: code,
     referredEmail: String(userDoc.email || '').toLowerCase(),
+
+    // Existing account never counts for referrer.
     status: 'rejected',
-    reason: 'existing_account_not_counted',
+    reason: fraudRejected ? risk.reason || 'fraud_score_rejected' : 'existing_account_not_counted',
+
     ip,
     deviceId: device,
     userAgent: String(req?.headers?.['user-agent'] || '').slice(0, 500),
+
+    riskScore: risk.score,
+    riskSignals: risk.signals,
+    riskDecision: risk.decision,
+    riskCheckedAt: new Date(),
+
+    bonusRequirementSeconds: REFERRED_BONUS_ACTIVITY_SECONDS,
   });
 
-  let bonusUntil = null;
-
-  // Existing accounts do NOT count for the referrer, but they can receive 2 days once.
-  if (!userDoc?.reward?.referredBonusGrantedAt) {
-    bonusUntil = await grantReferredUserBonusIfNeeded(userDoc, referralDoc);
+  if (fraudRejected) {
+    return {
+      applied: false,
+      status: 'rejected',
+      reason: referralDoc.reason,
+      riskScore: referralDoc.riskScore,
+      riskSignals: referralDoc.riskSignals,
+    };
   }
 
   return {
     applied: true,
     status: 'bonus_only',
     reason: 'existing_account_not_counted',
-    bonusUntil,
+    bonusPendingActivity: {
+      requiredSeconds: REFERRED_BONUS_ACTIVITY_SECONDS,
+      message:
+        'Spend 5 minutes on MovieFrost or watch any video for 5 minutes to unlock your 2-day ad-free reward.',
+    },
   };
 };
 
-export const recordRewardActivityForUser = async ({
-  userDoc,
-  type = 'visit',
-  movieId = '',
-  seconds = 0,
-} = {}) => {
-  if (!userDoc?._id) {
-    throw new Error('User not found');
-  }
+const buildBonusActivitySummary = (referralDoc) => {
+  if (!referralDoc) return null;
 
-  const today = isoDay();
+  const requiredSeconds = Number(
+    referralDoc.bonusRequirementSeconds || REFERRED_BONUS_ACTIVITY_SECONDS
+  );
 
-  const activity = {
-    ...(userDoc.rewardActivity || {}),
-  };
-
-  activity.activeDays = unique([...(activity.activeDays || []), today]).slice(-90);
-  activity.lastActivityAt = new Date();
-
-  if (type === 'watch') {
-    const watchSeconds = Math.max(0, Math.min(Number(seconds) || 0, 3600));
-
-    activity.watchSeconds = Math.max(
-      0,
-      Number(activity.watchSeconds || 0) + watchSeconds
-    );
-
-    if (isValidObjectIdString(movieId)) {
-      activity.watchedMovieIds = unique([
-        ...(activity.watchedMovieIds || []).map(String),
-        String(movieId),
-      ]);
-    }
-  }
-
-  userDoc.rewardActivity = activity;
-  userDoc.markModified('rewardActivity');
-  await userDoc.save();
-
-  const referralDoc = await RewardReferral.findOne({
-    referredUser: userDoc._id,
-    status: { $in: ['pending', 'review'] },
-  });
-
-  let evaluation = null;
-
-  if (referralDoc) {
-    evaluation = await reevaluateReferralDocument(referralDoc, userDoc);
-  }
+  const siteSeconds = Math.max(0, Number(referralDoc.activitySeconds || 0));
+  const watchSeconds = Math.max(0, Number(referralDoc.watchSeconds || 0));
+  const bestSeconds = Math.max(siteSeconds, watchSeconds);
 
   return {
-    activity: getRewardActivityInfo(userDoc),
-    referral: evaluation,
+    eligible: isReferralBonusEligible(referralDoc),
+    bonusGranted: !!referralDoc.bonusGrantedAt,
+    requiredSeconds,
+    siteSeconds,
+    watchSeconds,
+    bestSeconds,
+    remainingSeconds: Math.max(0, requiredSeconds - bestSeconds),
+    requirementMet: bestSeconds >= requiredSeconds,
+    bonusGrantedAt: referralDoc.bonusGrantedAt || null,
+    bonusRequirementMetAt: referralDoc.bonusRequirementMetAt || null,
+    status: referralDoc.status,
+    reason: referralDoc.reason,
   };
 };
 
@@ -657,7 +695,7 @@ export const getRewardSummaryForUser = async (userDoc) => {
 
   const referralCode = await ensureUserReferralCode(userDoc);
 
-  const [qualifiedCount, pendingCount, reviewCount, rejectedCount] =
+  const [qualifiedCount, pendingCount, rejectedCount, myReferral] =
     await Promise.all([
       RewardReferral.countDocuments({
         referrer: userDoc._id,
@@ -669,12 +707,9 @@ export const getRewardSummaryForUser = async (userDoc) => {
       }),
       RewardReferral.countDocuments({
         referrer: userDoc._id,
-        status: 'review',
-      }),
-      RewardReferral.countDocuments({
-        referrer: userDoc._id,
         status: 'rejected',
       }),
+      RewardReferral.findOne({ referredUser: userDoc._id }).lean(),
     ]);
 
   const claimed = Math.max(
@@ -696,22 +731,15 @@ export const getRewardSummaryForUser = async (userDoc) => {
 
     qualifiedCount,
     pendingCount,
-    reviewCount,
     rejectedCount,
 
     rewardClaimedReferralCount: claimed,
     unclaimedCount,
 
-    activity: getRewardActivityInfo(userDoc),
-
     nextWeekRewardAt: Math.max(0, REWARD_TIERS.WEEK.friends - unclaimedCount),
     nextMonthRewardAt: Math.max(0, REWARD_TIERS.MONTH.friends - unclaimedCount),
 
-    thresholds: {
-      reviewMin: RISK_REVIEW_MIN,
-      rejectOver: RISK_REJECT_OVER,
-      maxQualifiedPerHouseholdIp: MAX_QUALIFIED_PER_HOUSEHOLD_IP,
-    },
+    bonusActivity: buildBonusActivitySummary(myReferral),
 
     tiers: {
       week: REWARD_TIERS.WEEK,
@@ -773,47 +801,126 @@ export const claimRewardForUser = async (userDoc, { tier = 3 } = {}) => {
   };
 };
 
-export const approveRewardReferral = async ({
-  referralId,
-  adminId,
-  note = '',
-} = {}) => {
-  const referral = await RewardReferral.findById(referralId);
-  if (!referral) throw new Error('Referral not found');
+/**
+ * Tracks real time. Frontend sends small increments periodically.
+ * Backend caps increments and checks elapsed wall-clock time to reduce spoofing.
+ */
+export const trackRewardActivityForUser = async (
+  userDoc,
+  { kind = 'site', seconds = 30 } = {}
+) => {
+  if (!userDoc?._id) {
+    return { tracked: false, reason: 'user_not_found' };
+  }
 
-  const user = await User.findById(referral.referredUser);
-  if (!user) throw new Error('Referred user not found');
+  const referralDoc = await RewardReferral.findOne({
+    referredUser: userDoc._id,
+  });
 
-  referral.status = 'qualified';
-  referral.reason = 'manual_approved';
-  referral.qualifiedAt = new Date();
-  referral.reviewedBy = adminId || null;
-  referral.reviewedAt = new Date();
-  referral.reviewNote = String(note || '').trim().slice(0, 500);
+  if (!referralDoc) {
+    return { tracked: false, reason: 'no_referral' };
+  }
 
-  await referral.save();
+  const now = new Date();
+  const requestedSeconds = Math.max(1, Math.min(Number(seconds) || 0, ACTIVITY_INCREMENT_MAX_SECONDS));
 
-  await grantReferredUserBonusIfNeeded(user, referral);
+  let increment = requestedSeconds;
 
-  return referral;
+  if (referralDoc.activityLastTrackedAt) {
+    const elapsedSeconds = Math.max(
+      0,
+      Math.floor((now.getTime() - new Date(referralDoc.activityLastTrackedAt).getTime()) / 1000)
+    );
+
+    // Small +1 sec grace avoids losing time because of network delay.
+    increment = Math.max(0, Math.min(requestedSeconds, elapsedSeconds + 1));
+  } else {
+    increment = Math.min(requestedSeconds, 30);
+  }
+
+  referralDoc.activityLastTrackedAt = now;
+
+  const normalizedKind = String(kind || '').trim().toLowerCase();
+
+  if (increment > 0) {
+    if (normalizedKind === 'watch') {
+      referralDoc.watchSeconds = Math.max(0, Number(referralDoc.watchSeconds || 0)) + increment;
+    } else {
+      referralDoc.activitySeconds =
+        Math.max(0, Number(referralDoc.activitySeconds || 0)) + increment;
+    }
+  }
+
+  const requiredSeconds = Number(
+    referralDoc.bonusRequirementSeconds || REFERRED_BONUS_ACTIVITY_SECONDS
+  );
+
+  const siteSeconds = Math.max(0, Number(referralDoc.activitySeconds || 0));
+  const watchSeconds = Math.max(0, Number(referralDoc.watchSeconds || 0));
+  const requirementMet = siteSeconds >= requiredSeconds || watchSeconds >= requiredSeconds;
+
+  if (requirementMet && !referralDoc.bonusRequirementMetAt) {
+    referralDoc.bonusRequirementMetAt = now;
+  }
+
+  await referralDoc.save();
+
+  if (referralDoc.bonusGrantedAt || userDoc?.reward?.referredBonusGrantedAt) {
+    return {
+      tracked: true,
+      bonusGranted: false,
+      reason: 'already_granted',
+      activity: buildBonusActivitySummary(referralDoc),
+    };
+  }
+
+  if (!requirementMet) {
+    return {
+      tracked: true,
+      bonusGranted: false,
+      reason: 'activity_required',
+      activity: buildBonusActivitySummary(referralDoc),
+    };
+  }
+
+  if (!isReferralBonusEligible(referralDoc)) {
+    return {
+      tracked: true,
+      bonusGranted: false,
+      reason:
+        referralDoc.status === 'pending'
+          ? referralDoc.reason || 'referral_pending'
+          : referralDoc.reason || 'referral_not_eligible',
+      activity: buildBonusActivitySummary(referralDoc),
+    };
+  }
+
+  const adFreeUntil = await grantReferredUserBonusIfNeeded(userDoc, referralDoc);
+
+  return {
+    tracked: true,
+    bonusGranted: true,
+    message: 'You unlocked 2 days of ad-free streaming!',
+    adFreeUntil,
+    activity: buildBonusActivitySummary(referralDoc),
+  };
 };
 
-export const rejectRewardReferral = async ({
-  referralId,
-  adminId,
-  note = '',
-} = {}) => {
-  const referral = await RewardReferral.findById(referralId);
-  if (!referral) throw new Error('Referral not found');
-
-  referral.status = 'rejected';
-  referral.reason = 'manual_rejected';
-  referral.qualifiedAt = null;
-  referral.reviewedBy = adminId || null;
-  referral.reviewedAt = new Date();
-  referral.reviewNote = String(note || '').trim().slice(0, 500);
-
-  await referral.save();
-
-  return referral;
+export default {
+  REWARD_TIERS,
+  normalizeReferralCode,
+  normalizeDeviceId,
+  getClientIp,
+  createUniqueReferralCode,
+  ensureUserReferralCode,
+  buildReferralUrl,
+  isUserAdFreeActive,
+  serializeRewardForAuth,
+  extendUserAdFree,
+  processReferralForNewUser,
+  qualifyPendingReferralForUser,
+  applyReferralToExistingUser,
+  getRewardSummaryForUser,
+  claimRewardForUser,
+  trackRewardActivityForUser,
 };
