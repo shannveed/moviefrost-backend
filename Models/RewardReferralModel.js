@@ -33,9 +33,15 @@ const rewardReferralSchema = mongoose.Schema(
       lowercase: true,
     },
 
+    /**
+     * pending  = waiting email/activity
+     * review   = medium-risk referral, admin/manual review
+     * qualified = counted for reward
+     * rejected = high-risk/self/blocked
+     */
     status: {
       type: String,
-      enum: ['pending', 'qualified', 'rejected'],
+      enum: ['pending', 'review', 'qualified', 'rejected'],
       default: 'pending',
       index: true,
     },
@@ -64,6 +70,22 @@ const rewardReferralSchema = mongoose.Schema(
       default: '',
     },
 
+    riskScore: {
+      type: Number,
+      default: 0,
+      index: true,
+    },
+
+    riskSignals: {
+      type: [String],
+      default: [],
+    },
+
+    activityQualifiedAt: {
+      type: Date,
+      default: null,
+    },
+
     qualifiedAt: {
       type: Date,
       default: null,
@@ -74,12 +96,31 @@ const rewardReferralSchema = mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    reviewedAt: {
+      type: Date,
+      default: null,
+    },
+
+    reviewNote: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 500,
+    },
   },
   { timestamps: true }
 );
 
 rewardReferralSchema.index({ referrer: 1, status: 1, createdAt: -1 });
 rewardReferralSchema.index({ referrer: 1, deviceId: 1 });
+rewardReferralSchema.index({ referrer: 1, ip: 1, status: 1 });
 
 export default mongoose.models.RewardReferral ||
   mongoose.model('RewardReferral', rewardReferralSchema);

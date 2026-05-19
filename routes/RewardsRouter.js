@@ -1,10 +1,14 @@
 // backend/routes/RewardsRouter.js
 import express from 'express';
-import { protect } from '../middlewares/Auth.js';
+import { admin, protect } from '../middlewares/Auth.js';
 import {
   applyReferralForLoggedInUser,
+  approveRewardReferralAdmin,
   claimMyReward,
   getMyRewardStatus,
+  listRewardReferralsAdmin,
+  recordMyRewardActivity,
+  rejectRewardReferralAdmin,
   submitRewardFeedback,
 } from '../Controllers/RewardsController.js';
 
@@ -17,5 +21,21 @@ router.post('/feedback', submitRewardFeedback);
 router.get('/me', protect, getMyRewardStatus);
 router.post('/claim', protect, claimMyReward);
 router.post('/apply-referral', protect, applyReferralForLoggedInUser);
+router.post('/activity', protect, recordMyRewardActivity);
+
+// Optional admin/manual review endpoints
+router.get('/admin/referrals', protect, admin, listRewardReferralsAdmin);
+router.post(
+  '/admin/referrals/:id/approve',
+  protect,
+  admin,
+  approveRewardReferralAdmin
+);
+router.post(
+  '/admin/referrals/:id/reject',
+  protect,
+  admin,
+  rejectRewardReferralAdmin
+);
 
 export default router;
