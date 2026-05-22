@@ -8,7 +8,6 @@ import { createServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import rewardsRouter from './routes/RewardsRouter.js';
 
 import pushCampaignRouter from './routes/PushCampaignRouter.js';
 import { connectDB } from './config/db.js';
@@ -313,7 +312,6 @@ connectDB().catch((e) => {
 app.use('/api/users', userRoutes);
 app.use('/api/movies', moviesRouter);
 app.use('/api/categories', categoriesRouter);
-app.use('/api/rewards', rewardsRouter);
 app.use('/api/blog', blogRouter);
 app.use('/api/push-campaigns', pushCampaignRouter);
 app.use('/api/upload', Uploadrouter);
