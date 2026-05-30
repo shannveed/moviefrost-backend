@@ -8,6 +8,7 @@ import { createServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import websiteFeedbackRouter from './routes/WebsiteFeedbackRouter.js';
 
 import pushCampaignRouter from './routes/PushCampaignRouter.js';
 import { connectDB } from './config/db.js';
@@ -313,6 +314,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/movies', moviesRouter);
 app.use('/api/categories', categoriesRouter);
 app.use('/api/blog', blogRouter);
+app.use('/api/feedback', websiteFeedbackRouter);
 app.use('/api/push-campaigns', pushCampaignRouter);
 app.use('/api/upload', Uploadrouter);
 app.use('/api/notifications', notificationsRouter);
