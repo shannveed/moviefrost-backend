@@ -347,6 +347,10 @@ const buildVirtualTvEpisodes = (details = {}) => {
   return episodes;
 };
 
+/**
+ * Kept for compatibility, but actor pages now use person combined credits
+ * because discover/tv can return unrelated titles when person filters are ignored.
+ */
 export const getMovieDiscoverParams = ({
   personId,
   sort = 'latest',
@@ -380,13 +384,16 @@ export const getMovieDiscoverParams = ({
   };
 };
 
+/**
+ * Kept for compatibility.
+ */
 export const getTvDiscoverParams = ({
   personId,
   sort = 'latest',
   page = 1,
 }) => {
   const base = {
-    with_cast: personId,
+    with_people: personId,
     include_adult: 'false',
     page,
   };
@@ -484,7 +491,9 @@ export const mapTmdbDiscoverItemToVirtualMovie = ({
     desc: clean(item?.overview),
     category: genres.join(', ') || 'Drama',
     browseBy: isTv ? 'TMDb Virtual Web Series' : 'TMDb Virtual Movie',
-    thumbnailInfo: 'TMDb',
+
+    // Important: keep empty so MovieCard does not show "TMDb" badge.
+    thumbnailInfo: '',
 
     language: languageLabel(item?.original_language),
     year: year || '',
@@ -530,10 +539,136 @@ const sortVirtualTitles = (items = [], sort = 'latest') => {
   });
 };
 
+const normalizeRolesSet = (roles = []) =>
+  new Set(
+    (Array.isArray(roles) ? roles : [])
+      .map((role) => clean(role).toLowerCase())
+      .filter(Boolean)
+  );
+
+const RELEVANT_CREW_JOBS = new Set([
+  'director',
+  'creator',
+  'writer',
+  'screenplay',
+  'story',
+]);
+
+const isRelevantCrewCredit = (item) => {
+  const job = clean(item?.job).toLowerCase();
+  const department = clean(item?.department).toLowerCase();
+
+  if (RELEVANT_CREW_JOBS.has(job)) return true;
+  if (department.includes('direct')) return true;
+
+  return false;
+};
+
+const buildPersonCreditItems = (creditsData = {}, roles = []) => {
+  const rolesSet = normalizeRolesSet(roles);
+
+  const castCredits = Array.isArray(creditsData?.cast) ? creditsData.cast : [];
+  const crewCredits = Array.isArray(creditsData?.crew) ? creditsData.crew : [];
+
+  const includeCast =
+    rolesSet.size === 0 ||
+    rolesSet.has('actor') ||
+    rolesSet.has('acting') ||
+    rolesSet.has('cast');
+
+  const includeCrew =
+    rolesSet.has('director') ||
+    rolesSet.has('directing') ||
+    rolesSet.has('crew');
+
+  let out = [];
+
+  if (includeCast) {
+    out = out.concat(
+      castCredits.map((item) => ({
+        ...item,
+        creditGroup: 'cast',
+      }))
+    );
+  }
+
+  if (includeCrew) {
+    out = out.concat(
+      crewCredits
+        .filter(isRelevantCrewCredit)
+        .map((item) => ({
+          ...item,
+          creditGroup: 'crew',
+        }))
+    );
+  }
+
+  // Fallback: if role inference failed, still return real person credits.
+  if (!out.length) {
+    out = castCredits.map((item) => ({ ...item, creditGroup: 'cast' }));
+
+    if (!out.length) {
+      out = crewCredits
+        .filter(isRelevantCrewCredit)
+        .map((item) => ({ ...item, creditGroup: 'crew' }));
+    }
+  }
+
+  return out.filter((item) => {
+    const mediaType = normalizeTmdbType(item?.media_type);
+    const id = Number(item?.id);
+    const title = clean(mediaType === 'tv' ? item?.name : item?.title);
+
+    if (item?.adult === true) return false;
+    if (!mediaType || !Number.isFinite(id) || id <= 0) return false;
+    if (!title) return false;
+
+    return true;
+  });
+};
+
+const dedupePersonCredits = (items = []) => {
+  const map = new Map();
+
+  const score = (item) => {
+    const creditGroup = clean(item?.creditGroup).toLowerCase();
+    const groupScore = creditGroup === 'cast' ? 2 : 1;
+
+    const popularity = Number(item?.popularity || 0);
+    const votes = Number(item?.vote_count || 0);
+
+    return groupScore * 1_000_000_000 + popularity * 1000 + votes;
+  };
+
+  for (const item of items || []) {
+    const mediaType = normalizeTmdbType(item?.media_type);
+    const id = Number(item?.id);
+    const key = `${mediaType}:${id}`;
+
+    if (!mediaType || !Number.isFinite(id) || id <= 0) continue;
+
+    const existing = map.get(key);
+    if (!existing || score(item) > score(existing)) {
+      map.set(key, item);
+    }
+  }
+
+  return Array.from(map.values());
+};
+
+/**
+ * Actor/director title discovery.
+ *
+ * IMPORTANT:
+ * Uses /person/{id}/combined_credits instead of /discover/tv.
+ * This prevents unrelated TV shows/movies from appearing on actor pages.
+ */
 export const discoverActorTitles = async ({
   personId,
   sort = 'latest',
   tmdbPage = 1,
+  limit = TMDB_DISCOVER_PAGE_SIZE,
+  roles = ['actor'],
 }) => {
   if (!isTmdbDiscoverEnabled()) {
     return {
@@ -554,46 +689,42 @@ export const discoverActorTitles = async ({
     };
   }
 
-  const genreMaps = await getTmdbGenreMaps();
+  const pageNumber = Math.max(1, Number(tmdbPage) || 1);
+  const safeLimit = Math.min(
+    Math.max(1, Number(limit) || TMDB_DISCOVER_PAGE_SIZE),
+    40
+  );
 
-  const [moviesData, tvData] = await Promise.all([
-    discoverActorMovies({ personId: id, sort, tmdbPage }).catch(() => null),
-    discoverActorTv({ personId: id, sort, tmdbPage }).catch(() => null),
+  const [genreMaps, creditsData] = await Promise.all([
+    getTmdbGenreMaps(),
+    fetchTmdbJson(`/person/${id}/combined_credits`, {
+      language: 'en-US',
+    }),
   ]);
 
-  const movieResults = Array.isArray(moviesData?.results)
-    ? moviesData.results
-    : [];
+  const credits = dedupePersonCredits(buildPersonCreditItems(creditsData, roles));
 
-  const tvResults = Array.isArray(tvData?.results) ? tvData.results : [];
-
-  const mapped = [
-    ...movieResults.map((item) =>
+  const mapped = credits
+    .map((item) =>
       mapTmdbDiscoverItemToVirtualMovie({
         item,
-        tmdbType: 'movie',
+        tmdbType: normalizeTmdbType(item?.media_type),
         genreMaps,
       })
-    ),
-    ...tvResults.map((item) =>
-      mapTmdbDiscoverItemToVirtualMovie({
-        item,
-        tmdbType: 'tv',
-        genreMaps,
-      })
-    ),
-  ].filter(Boolean);
+    )
+    .filter(Boolean);
+
+  const sorted = sortVirtualTitles(mapped, sort);
+
+  const totalResults = sorted.length;
+  const pages = totalResults ? Math.ceil(totalResults / safeLimit) : 0;
+  const start = (pageNumber - 1) * safeLimit;
 
   return {
     enabled: true,
-    results: sortVirtualTitles(mapped, sort),
-    pages: Math.max(
-      Number(moviesData?.total_pages || 0),
-      Number(tvData?.total_pages || 0)
-    ),
-    totalResults:
-      Number(moviesData?.total_results || 0) +
-      Number(tvData?.total_results || 0),
+    results: sorted.slice(start, start + safeLimit),
+    pages,
+    totalResults,
   };
 };
 
@@ -632,10 +763,14 @@ export const buildVirtualMovieFromTmdbDetails = async ({
     throw new Error('TMDb title has no name');
   }
 
-  const releaseDate = clean(isTv ? details?.first_air_date : details?.release_date);
+  const releaseDate = clean(
+    isTv ? details?.first_air_date : details?.release_date
+  );
   const year = yearFromDate(releaseDate);
 
-  const slug = slugify(`${name}${year ? ` ${year}` : ''}`) || `tmdb-${safeType}-${id}`;
+  const slug =
+    slugify(`${name}${year ? ` ${year}` : ''}`) ||
+    `tmdb-${safeType}-${id}`;
 
   const poster = buildTmdbImageUrl(details?.poster_path, 'w500');
   const backdrop = buildTmdbImageUrl(details?.backdrop_path, 'w1280');
@@ -669,7 +804,9 @@ export const buildVirtualMovieFromTmdbDetails = async ({
 
     category: genres.join(', ') || 'Drama',
     browseBy: isTv ? 'TMDb Virtual Web Series' : 'TMDb Virtual Movie',
-    thumbnailInfo: 'TMDb',
+
+    // Important: keep empty so MovieCard does not show "TMDb" badge.
+    thumbnailInfo: '',
 
     language: languageLabel(details?.original_language),
     year: year || '',
@@ -714,7 +851,9 @@ export const buildVirtualMovieFromTmdbDetails = async ({
       rottenTomatoes: {
         rating: null,
         url: name
-          ? `https://www.rottentomatoes.com/search?search=${encodeURIComponent(name)}`
+          ? `https://www.rottentomatoes.com/search?search=${encodeURIComponent(
+            name
+          )}`
           : '',
       },
     },

@@ -18,9 +18,6 @@ const SORT_VALUES = new Set(['latest', 'best', 'popular']);
 const MOVIE_CARD_SELECT =
   '_id slug name image titleImage thumbnailInfo type category browseBy time year language rate numberOfReviews isPublished latest latestNew popular orderIndex createdAt updatedAt tmdbId tmdbType viewCount';
 
-const IDENTITY_SELECT =
-  '_id slug name type year casts director directorSlug tmdbId tmdbType updatedAt createdAt';
-
 const clean = (value = '') => String(value ?? '').trim();
 
 const clampLimit = (value, fallback = DEFAULT_LIMIT, max = MAX_LIMIT) => {
@@ -334,6 +331,23 @@ const mergeLocalAndTmdb = ({
   return sortMergedItems(out, sort).slice(0, limit);
 };
 
+const buildDiscoveryRoles = ({ identity, tmdb }) => {
+  const set = new Set(
+    (Array.isArray(identity?.roles) ? identity.roles : [])
+      .map((role) => clean(role).toLowerCase())
+      .filter(Boolean)
+  );
+
+  const department = clean(tmdb?.knownForDepartment).toLowerCase();
+
+  if (department.includes('acting')) set.add('actor');
+  if (department.includes('direct')) set.add('director');
+
+  if (!set.size) set.add('actor');
+
+  return Array.from(set);
+};
+
 /**
  * PUBLIC
  * GET /api/actors/:slug?sort=latest|best|popular&page=1&limit=20
@@ -421,6 +435,8 @@ export const getActorBySlug = asyncHandler(async (req, res) => {
         personId: tmdbPersonId,
         sort,
         tmdbPage: page,
+        limit,
+        roles: buildDiscoveryRoles({ identity, tmdb }),
       });
     } catch (e) {
       console.warn('[tmdb-discover] actor credits skipped:', e?.message || e);
