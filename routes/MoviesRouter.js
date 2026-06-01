@@ -39,12 +39,33 @@ import {
 } from '../Controllers/RatingsController.js';
 
 import { syncTmdbCreditsAdmin } from '../Controllers/TmdbController.js';
+import { searchMoviesAndTmdb } from '../Controllers/TmdbSearchController.js';
 
 const router = express.Router();
 
+const searchAwarePublicMoviesList = (req, res, next) => {
+  const searchTerm = String(
+    req.query?.search || req.query?.query || req.query?.q || ''
+  ).trim();
+
+  if (searchTerm) {
+    return searchMoviesAndTmdb(req, res, next);
+  }
+
+  return moviesController.getMovies(req, res, next);
+};
+
 // * PUBLIC ROUTES *
 router.post('/import', moviesController.importMovies);
-router.get('/', moviesController.getMovies);
+
+// ✅ Search-aware public list:
+// /api/movies?search=red notice now does:
+// local MongoDB first -> TMDb virtual fallback if no local match.
+router.get('/', searchAwarePublicMoviesList);
+
+// Optional explicit endpoint:
+// /api/movies/search?search=red notice
+router.get('/search', searchMoviesAndTmdb);
 
 // Sitemaps
 router.get('/sitemap.xml', generateSitemap);
@@ -56,7 +77,7 @@ router.get('/latest', moviesController.getLatestMovies);
 // Latest New
 router.get('/latest-new', moviesController.getLatestNewMovies);
 
-// ✅ NEW: Popular tab list
+// Popular tab list
 router.get('/popular', getPopularMovies);
 
 // Banner
@@ -91,7 +112,7 @@ router.get(
 // Admin Banner list
 router.get('/admin/banner', protect, admin, getBannerMoviesAdmin);
 
-// ✅ NEW: Admin Popular list
+// Admin Popular list
 router.get('/admin/popular', protect, admin, getPopularMoviesAdmin);
 
 // ADMIN RELATED
@@ -145,7 +166,7 @@ router.post(
   reorderLatestNewMovies
 );
 
-// ✅ NEW: Popular
+// Popular
 router.post('/admin/popular', protect, admin, setPopularMovies);
 
 router.post(
