@@ -3,6 +3,10 @@ import express from 'express';
 import * as moviesController from '../Controllers/MoviesController.js';
 import { protect, admin } from '../middlewares/Auth.js';
 import { generateSitemap } from '../Controllers/SitemapController.js';
+import {
+  getTmdbVirtualMovie,
+  resolveTmdbMovie,
+} from '../Controllers/TmdbVirtualController.js';
 
 import {
   getRelatedMovies,
@@ -65,6 +69,10 @@ router.get('/related/:id', getRelatedMovies);
 
 // Lightweight redirect info
 router.get('/redirect-info/:id', getMovieRedirectInfo);
+
+// TMDb virtual/ghost titles - no MongoDB write
+router.post('/tmdb/resolve', resolveTmdbMovie);
+router.get('/tmdb/virtual/:type/:id', getTmdbVirtualMovie);
 
 // ADMIN READ ROUTES
 router.get('/admin', protect, admin, moviesController.getMoviesAdmin);

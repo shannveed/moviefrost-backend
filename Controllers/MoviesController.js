@@ -131,14 +131,17 @@ const buildPlainExternalRatings = (movie) => ({
 const normalizeCastForReadPersist = (cast) => {
   const name = String(cast?.name || '').trim();
   const image = String(cast?.image || '').trim();
+  const tmdbId = Number(cast?.tmdbId || 0);
 
   return {
     ...(cast?._id ? { _id: cast._id } : {}),
     name,
     image,
     slug: name ? slugify(name) : '',
+    tmdbId: Number.isFinite(tmdbId) && tmdbId > 0 ? tmdbId : null,
   };
 };
+
 
 const syncReadPathDerivedFields = (movie) => {
   if (!movie) return;
@@ -171,6 +174,7 @@ const getReadPathSideEffectsSnapshot = (movie) =>
         name: String(c?.name || '').trim(),
         image: String(c?.image || '').trim(),
         slug: String(c?.slug || '').trim(),
+        tmdbId: toNullableNumber(c?.tmdbId),
       }))
       : [],
     director: String(movie?.director || '').trim(),

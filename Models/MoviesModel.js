@@ -123,8 +123,12 @@ const moviesSchema = mongoose.Schema(
         name: { type: String, required: true, trim: true },
         image: { type: String, required: true, trim: true },
         slug: { type: String, trim: true, index: true, default: '' },
+
+        // TMDb person ID for accurate actor matching/discovery
+        tmdbId: { type: Number, default: null, index: true },
       },
     ],
+
 
     director: { type: String, trim: true, default: '' },
     directorSlug: { type: String, trim: true, default: '', index: true },
@@ -187,10 +191,16 @@ moviesSchema.pre('validate', function (next) {
     if (Array.isArray(this.casts)) {
       for (const c of this.casts) {
         if (!c) continue;
+
         const n = String(c.name || '').trim();
+        const img = String(c.image || '').trim();
+        const personId = Number(c.tmdbId || 0);
+
         c.name = n;
-        c.image = String(c.image || '').trim();
+        c.image = img;
         c.slug = n ? slugify(n) : '';
+        c.tmdbId =
+          Number.isFinite(personId) && personId > 0 ? personId : null;
       }
     }
 

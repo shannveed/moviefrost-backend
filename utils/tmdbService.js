@@ -218,15 +218,18 @@ const extractDirector = (credits = {}) => {
 
 const buildCasts = (credits = {}, limit = 20) => {
   const cast = Array.isArray(credits?.cast) ? credits.cast : [];
+
   return cast
     .filter((c) => c?.name)
     .slice(0, limit)
     .map((c) => ({
       name: String(c.name).trim(),
       image: buildProfileUrl(c.profile_path) || PLACEHOLDER_PROFILE,
+      tmdbId: Number(c.id) || null,
     }))
     .filter((c) => c.name && c.image);
 };
+
 
 const findTmdbByImdbId = async (imdbId, tmdbType) => {
   const safe = normalizeImdbId(imdbId);

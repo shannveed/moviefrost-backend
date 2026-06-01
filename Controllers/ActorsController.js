@@ -4,16 +4,19 @@ import asyncHandler from 'express-async-handler';
 import Movie from '../Models/MoviesModel.js';
 import { slugify, escapeRegex } from '../utils/slugify.js';
 import { fetchTmdbPersonProfile } from '../utils/tmdbPersonService.js';
+import { discoverActorTitles } from '../utils/tmdbDiscoverService.js';
 
 // Treat "missing isPublished" as published
 const publicVisibilityFilter = { isPublished: { $ne: false } };
 
-const DEFAULT_LIMIT = 24;
-const MAX_LIMIT = 60;
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 40;
 const SITEMAP_LIMIT = 50000;
 
+const SORT_VALUES = new Set(['latest', 'best', 'popular']);
+
 const MOVIE_CARD_SELECT =
-  '_id slug name image titleImage thumbnailInfo type category browseBy time year language rate numberOfReviews isPublished latest orderIndex createdAt updatedAt';
+  '_id slug name image titleImage thumbnailInfo type category browseBy time year language rate numberOfReviews isPublished latest latestNew popular orderIndex createdAt updatedAt tmdbId tmdbType viewCount';
 
 const IDENTITY_SELECT =
   '_id slug name type year casts director directorSlug tmdbId tmdbType updatedAt createdAt';
@@ -24,6 +27,11 @@ const clampLimit = (value, fallback = DEFAULT_LIMIT, max = MAX_LIMIT) => {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.min(n, max);
+};
+
+const normalizeSort = (value = '') => {
+  const raw = clean(value).toLowerCase();
+  return SORT_VALUES.has(raw) ? raw : 'latest';
 };
 
 const titleCaseFromSlug = (slug = '') =>
@@ -125,10 +133,11 @@ const buildRoleLabel = (roles = []) => {
   return 'Actor';
 };
 
-const buildActorResponse = ({ slug, identity, tmdb, total }) => {
-  const roles = Array.isArray(identity?.roles) && identity.roles.length
-    ? identity.roles
-    : ['actor'];
+const buildActorResponse = ({ slug, identity, tmdb, localTotal }) => {
+  const roles =
+    Array.isArray(identity?.roles) && identity.roles.length
+      ? identity.roles
+      : ['actor'];
 
   const name = clean(tmdb?.name || identity?.name || titleCaseFromSlug(slug));
 
@@ -160,18 +169,179 @@ const buildActorResponse = ({ slug, identity, tmdb, total }) => {
 
     knownFor: Array.isArray(tmdb?.knownFor) ? tmdb.knownFor : [],
 
-    localCreditsCount: Number(total || 0),
+    localCreditsCount: Number(localTotal || 0),
     source: tmdb?.found ? 'tmdb+local' : 'local',
   };
 };
 
+const localSort = (sort = 'latest') => {
+  if (sort === 'best') {
+    return { rate: -1, numberOfReviews: -1, year: -1, createdAt: -1 };
+  }
+
+  if (sort === 'popular') {
+    return { viewCount: -1, latestNewAt: -1, createdAt: -1 };
+  }
+
+  return { year: -1, latest: -1, orderIndex: 1, createdAt: -1 };
+};
+
+const localTmdbType = (movie) => {
+  const stored = clean(movie?.tmdbType);
+  if (stored === 'movie' || stored === 'tv') return stored;
+  return movie?.type === 'WebSeries' ? 'tv' : 'movie';
+};
+
+const titleYearKey = (item) => {
+  const title = clean(item?.name || item?.title);
+  const year = Number(item?.year);
+  const titleSlug = slugify(title);
+  if (!titleSlug) return '';
+
+  return `${titleSlug}:${Number.isFinite(year) ? year : ''}`;
+};
+
+const strongTmdbKey = (item) => {
+  const id = Number(item?.tmdbId);
+  const type = clean(item?.tmdbType || localTmdbType(item));
+
+  if (!Number.isFinite(id) || id <= 0) return '';
+  if (type !== 'movie' && type !== 'tv') return '';
+
+  return `${type}:${id}`;
+};
+
+const shapeLocalMovieCard = (movie) => {
+  const seg = movie?.slug || movie?._id;
+
+  return {
+    ...movie,
+    source: 'local',
+    isTmdbVirtual: false,
+    href: seg ? `/movie/${seg}` : '',
+    watchHref: seg ? `/watch/${seg}` : '',
+  };
+};
+
+const buildLocalMaps = (docs = []) => {
+  const strong = new Map();
+  const fallback = new Map();
+
+  for (const doc of docs || []) {
+    const shaped = shapeLocalMovieCard(doc);
+
+    const sKey = strongTmdbKey(shaped);
+    if (sKey && !strong.has(sKey)) strong.set(sKey, shaped);
+
+    const fKey = titleYearKey(shaped);
+    if (fKey && !fallback.has(fKey)) fallback.set(fKey, shaped);
+  }
+
+  return { strong, fallback };
+};
+
+const findLocalMatchForVirtual = (virtual, maps) => {
+  const sKey = strongTmdbKey(virtual);
+  if (sKey && maps.strong.has(sKey)) return maps.strong.get(sKey);
+
+  const fKey = titleYearKey(virtual);
+  if (fKey && maps.fallback.has(fKey)) return maps.fallback.get(fKey);
+
+  return null;
+};
+
+const itemLatestValue = (item) => {
+  const dateValue =
+    Date.parse(item?.tmdbReleaseDate || item?.updatedAt || item?.createdAt || '') || 0;
+
+  if (dateValue) return dateValue;
+
+  const y = Number(item?.year);
+  return Number.isFinite(y) ? Date.UTC(y, 0, 1) : 0;
+};
+
+const sortMergedItems = (items = [], sort = 'latest') => {
+  const list = Array.isArray(items) ? [...items] : [];
+
+  if (sort === 'best') {
+    return list.sort((a, b) => {
+      const av =
+        Number(a?.tmdbVoteAverage || 0) ||
+        (Number(a?.rate || 0) ? Number(a.rate) * 2 : 0);
+
+      const bv =
+        Number(b?.tmdbVoteAverage || 0) ||
+        (Number(b?.rate || 0) ? Number(b.rate) * 2 : 0);
+
+      if (bv !== av) return bv - av;
+
+      const ac = Number(a?.tmdbVoteCount || a?.numberOfReviews || 0);
+      const bc = Number(b?.tmdbVoteCount || b?.numberOfReviews || 0);
+
+      return bc - ac;
+    });
+  }
+
+  if (sort === 'popular') {
+    return list.sort((a, b) => {
+      const av = Number(a?.popularity || a?.viewCount || 0);
+      const bv = Number(b?.popularity || b?.viewCount || 0);
+      return bv - av;
+    });
+  }
+
+  return list.sort((a, b) => itemLatestValue(b) - itemLatestValue(a));
+};
+
+const mergeLocalAndTmdb = ({
+  localPageDocs = [],
+  localAllDocs = [],
+  tmdbItems = [],
+  sort = 'latest',
+  limit = DEFAULT_LIMIT,
+}) => {
+  const maps = buildLocalMaps(localAllDocs);
+  const out = [];
+  const seen = new Set();
+
+  const add = (item) => {
+    if (!item) return;
+
+    const keys = [
+      strongTmdbKey(item),
+      titleYearKey(item),
+      item?._id ? `id:${String(item._id)}` : '',
+    ].filter(Boolean);
+
+    if (keys.some((key) => seen.has(key))) return;
+
+    keys.forEach((key) => seen.add(key));
+    out.push(item);
+  };
+
+  const sortedTmdb = sortMergedItems(tmdbItems, sort).slice(0, limit);
+
+  for (const virtual of sortedTmdb) {
+    const localMatch = findLocalMatchForVirtual(virtual, maps);
+    add(localMatch || virtual);
+  }
+
+  for (const local of localPageDocs || []) {
+    if (out.length >= limit) break;
+    add(shapeLocalMovieCard(local));
+  }
+
+  return sortMergedItems(out, sort).slice(0, limit);
+};
+
 /**
  * PUBLIC
- * GET /api/actors/:slug?page=1&limit=24
+ * GET /api/actors/:slug?sort=latest|best|popular&page=1&limit=20
  *
  * Returns:
- * - TMDb person information (best effort)
- * - local MovieFrost movies/web-series where person is actor or director
+ * - TMDb person information
+ * - merged local MovieFrost titles + TMDb virtual/ghost titles
+ * - local title wins over TMDb duplicate
  */
 export const getActorBySlug = asyncHandler(async (req, res) => {
   const slug = clean(req.params.slug).toLowerCase();
@@ -181,21 +351,26 @@ export const getActorBySlug = asyncHandler(async (req, res) => {
     throw new Error('Actor slug is required');
   }
 
-  const page = Math.max(1, Number(req.query.page) || Number(req.query.pageNumber) || 1);
+  const page = Math.max(
+    1,
+    Number(req.query.page) || Number(req.query.pageNumber) || 1
+  );
+
   const limit = clampLimit(req.query.limit, DEFAULT_LIMIT, MAX_LIMIT);
   const skip = (page - 1) * limit;
+  const sort = normalizeSort(req.query.sort);
 
   const filter = buildActorMovieFilter(slug);
 
-  const [identityDocs, movies, total] = await Promise.all([
+  const [localAllDocs, localPageDocs, localTotal] = await Promise.all([
     Movie.find(filter)
-      .sort({ latest: -1, orderIndex: 1, createdAt: -1 })
-      .limit(20)
-      .select(IDENTITY_SELECT)
+      .sort(localSort(sort))
+      .limit(500)
+      .select(`${MOVIE_CARD_SELECT} casts director directorSlug`)
       .lean(),
 
     Movie.find(filter)
-      .sort({ latest: -1, orderIndex: 1, createdAt: -1 })
+      .sort(localSort(sort))
       .skip(skip)
       .limit(limit)
       .select(MOVIE_CARD_SELECT)
@@ -204,12 +379,14 @@ export const getActorBySlug = asyncHandler(async (req, res) => {
     Movie.countDocuments(filter),
   ]);
 
-  if (!total || !identityDocs.length) {
-    res.status(404);
-    throw new Error('Actor not found');
-  }
-
-  const identity = extractLocalIdentity({ slug, docs: identityDocs });
+  const identity = localAllDocs.length
+    ? extractLocalIdentity({ slug, docs: localAllDocs })
+    : {
+      name: titleCaseFromSlug(slug),
+      localImage: '',
+      roles: ['actor'],
+      tmdbPersonId: null,
+    };
 
   let tmdb = null;
 
@@ -217,39 +394,86 @@ export const getActorBySlug = asyncHandler(async (req, res) => {
     tmdb = await fetchTmdbPersonProfile({
       name: identity.name,
       role: buildRoleLabel(identity.roles),
-      movieHints: buildMovieHints(identityDocs),
+      movieHints: buildMovieHints(localAllDocs),
       tmdbId: identity.tmdbPersonId,
     });
   } catch (e) {
     console.warn('[tmdb-person] actor page skipped:', e?.message || e);
   }
 
+  if (!localTotal && !tmdb?.found) {
+    res.status(404);
+    throw new Error('Actor not found');
+  }
+
+  const tmdbPersonId = Number(tmdb?.tmdbId || identity?.tmdbPersonId || 0);
+
+  let tmdbDiscovery = {
+    enabled: false,
+    results: [],
+    pages: 0,
+    totalResults: 0,
+  };
+
+  if (Number.isFinite(tmdbPersonId) && tmdbPersonId > 0) {
+    try {
+      tmdbDiscovery = await discoverActorTitles({
+        personId: tmdbPersonId,
+        sort,
+        tmdbPage: page,
+      });
+    } catch (e) {
+      console.warn('[tmdb-discover] actor credits skipped:', e?.message || e);
+    }
+  }
+
+  const movies = mergeLocalAndTmdb({
+    localPageDocs,
+    localAllDocs,
+    tmdbItems: tmdbDiscovery.results,
+    sort,
+    limit,
+  });
+
   const actor = buildActorResponse({
     slug,
     identity,
     tmdb,
-    total,
+    localTotal,
   });
+
+  const localPages = Math.ceil(Number(localTotal || 0) / limit) || 0;
+  const tmdbPages = Number(tmdbDiscovery?.pages || 0);
+
+  const pages = Math.max(1, localPages, tmdbPages);
+
+  const total = Math.max(
+    Number(localTotal || 0),
+    Number(tmdbDiscovery?.totalResults || 0),
+    movies.length
+  );
 
   res
     .set(
       'Cache-Control',
-      'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400'
+      'public, max-age=600, s-maxage=600, stale-while-revalidate=86400'
     )
     .json({
       actor,
       movies,
       page,
-      pages: Math.ceil(total / limit) || 1,
+      pages,
       total,
+      localTotal: Number(localTotal || 0),
+      tmdbTotal: Number(tmdbDiscovery?.totalResults || 0),
+      sort,
+      limit,
     });
 });
 
 /**
  * PUBLIC
  * GET /api/actors/sitemap?limit=50000
- *
- * Lightweight actor/director index for frontend /sitemap-actors.xml.
  */
 export const getActorsSitemapEntries = asyncHandler(async (req, res) => {
   const limit = clampLimit(req.query.limit, SITEMAP_LIMIT, SITEMAP_LIMIT);
@@ -327,12 +551,12 @@ export const getActorsSitemapEntries = asyncHandler(async (req, res) => {
 
   const addRow = (row, role) => {
     const name = clean(row?.name);
-    const slug = slugify(clean(row?._id)) || slugify(name);
+    const rowSlug = slugify(clean(row?._id)) || slugify(name);
 
-    if (!name || !slug) return;
+    if (!name || !rowSlug) return;
 
-    const existing = map.get(slug) || {
-      slug,
+    const existing = map.get(rowSlug) || {
+      slug: rowSlug,
       name,
       roles: [],
       movieCount: 0,
@@ -352,7 +576,7 @@ export const getActorsSitemapEntries = asyncHandler(async (req, res) => {
       }
     }
 
-    map.set(slug, existing);
+    map.set(rowSlug, existing);
   };
 
   (castRows || []).forEach((row) => addRow(row, 'actor'));
