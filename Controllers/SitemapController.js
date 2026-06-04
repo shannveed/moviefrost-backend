@@ -245,6 +245,11 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
   const staticPages = [
     { loc: `${FRONTEND_BASE_URL}/`, changefreq: 'daily', priority: '1.0' },
     { loc: `${FRONTEND_BASE_URL}/movies`, changefreq: 'daily', priority: '0.9' },
+    {
+      loc: `${FRONTEND_BASE_URL}/browse-by-film-industry`,
+      changefreq: 'weekly',
+      priority: '0.85',
+    },
     { loc: `${FRONTEND_BASE_URL}/blog`, changefreq: 'weekly', priority: '0.85' },
     { loc: `${FRONTEND_BASE_URL}/about-us`, changefreq: 'weekly', priority: '0.7' },
     { loc: `${FRONTEND_BASE_URL}/contact-us`, changefreq: 'weekly', priority: '0.7' },
@@ -260,6 +265,7 @@ export const generateSitemap = asyncHandler(async (_req, res) => {
       priority: '0.6',
     },
   ];
+
 
   for (const page of staticPages) addUniqueUrl(urls, seen, page);
 
