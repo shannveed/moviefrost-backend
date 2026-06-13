@@ -9,7 +9,8 @@ import { Server as SocketServer } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import websiteFeedbackRouter from './routes/WebsiteFeedbackRouter.js';
-
+import rateLimit from 'express-rate-limit';
+import { protect } from './middlewares/Auth.js';
 import pushCampaignRouter from './routes/PushCampaignRouter.js';
 import { connectDB } from './config/db.js';
 import userRoutes from './routes/UserRouter.js';
@@ -266,6 +267,155 @@ app.set('trust proxy', 1);
 app.options('*', cors(corsOptions));
 app.use(cors(corsOptions));
 
+/* ============================================================
+   Basic bot blocking + serverless-safe-ish rate limits
+   Real serious protection should still be done in Cloudflare/Vercel Firewall.
+   ============================================================ */
+
+const BASIC_BOT_BLOCK_ENABLED =
+  String(process.env.BASIC_BOT_BLOCK_ENABLED ?? 'true')
+    .trim()
+    .toLowerCase() !== 'false';
+
+const BAD_API_UA_RE =
+  /(curl|wget|python|python-requests|scrapy|aiohttp|httpclient|go-http-client|java\/|okhttp|headless|phantomjs|selenium|playwright)/i;
+
+const GOOD_BOT_UA_RE =
+  /(googlebot|bingbot|duckduckbot|baiduspider|yandexbot|facebookexternalhit|twitterbot|telegrambot)/i;
+
+const basicApiBotBlocker = (req, res, next) => {
+  if (!BASIC_BOT_BLOCK_ENABLED) return next();
+
+  const ua = String(req.headers['user-agent'] || '').trim();
+
+  if (ua && BAD_API_UA_RE.test(ua) && !GOOD_BOT_UA_RE.test(ua)) {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  return next();
+};
+
+app.use('/api', basicApiBotBlocker);
+
+const makeLimiter = ({ windowMs, max, message }) =>
+  rateLimit({
+    windowMs,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === 'OPTIONS',
+    handler: (_req, res) => {
+      res.status(429).json({
+        message: message || 'Too many requests, please try again later.',
+      });
+    },
+  });
+
+const publicApiLimiter = makeLimiter({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_PUBLIC_API_PER_MIN || 180),
+  message: 'Too many API requests, please slow down.',
+});
+
+const expensiveApiLimiter = makeLimiter({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_EXPENSIVE_API_PER_MIN || 30),
+  message: 'Too many expensive API requests, please try again later.',
+});
+
+const searchApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_SEARCH_API_PER_MIN || 25),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    if (req.method !== 'GET') return true;
+    const hasSearch = ['search', 'query', 'q'].some((key) =>
+      String(req.query?.[key] || '').trim()
+    );
+    return !hasSearch;
+  },
+  handler: (_req, res) => {
+    res.status(429).json({
+      message: 'Too many search requests, please try again later.',
+    });
+  },
+});
+
+const uploadLimiter = makeLimiter({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_UPLOAD_PER_MIN || 5),
+  message: 'Too many upload requests, please try again later.',
+});
+
+const authLimiter = makeLimiter({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_AUTH_PER_MIN || 10),
+  message: 'Too many login attempts, please try again later.',
+});
+
+const feedbackLimiter = makeLimiter({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_FEEDBACK_PER_MIN || 5),
+  message: 'Too many feedback submissions, please try again later.',
+});
+
+const viewWriteLimiter = makeLimiter({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_VIEW_WRITE_PER_MIN || 60),
+  message: 'Too many view events, please try again later.',
+});
+
+app.use('/api/users/login', authLimiter);
+app.use('/api/users/google-login', authLimiter);
+
+app.use('/api/movies/tmdb', expensiveApiLimiter);
+app.use('/api/actors', expensiveApiLimiter);
+app.use('/api/movies', searchApiLimiter);
+app.use('/api/movies/:id/view', viewWriteLimiter);
+
+app.use('/api/upload', uploadLimiter);
+app.use('/api/feedback', feedbackLimiter);
+
+app.use('/api', publicApiLimiter);
+
+/* ============================================================
+   Public API cache headers
+   ============================================================ */
+const hasSearchQuery = (req) =>
+  ['search', 'query', 'q'].some((key) => String(req.query?.[key] || '').trim());
+
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+
+  const pathName = req.path || '';
+
+  if (pathName === '/api/categories') {
+    res.set(
+      'Cache-Control',
+      'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400'
+    );
+  }
+
+  if (pathName === '/api/movies/browseBy-distinct') {
+    res.set(
+      'Cache-Control',
+      'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400'
+    );
+  }
+
+  if (pathName === '/api/movies' && !hasSearchQuery(req)) {
+    res.set(
+      'Cache-Control',
+      'public, max-age=60, s-maxage=60, stale-while-revalidate=600'
+    );
+  }
+
+  next();
+});
+
+
+
 // robots.txt for backend domain.
 // Main frontend robots.txt is generated by Next.js.
 app.use('/robots.txt', (_req, res) => {
@@ -316,7 +466,7 @@ app.use('/api/categories', categoriesRouter);
 app.use('/api/blog', blogRouter);
 app.use('/api/feedback', websiteFeedbackRouter);
 app.use('/api/push-campaigns', pushCampaignRouter);
-app.use('/api/upload', Uploadrouter);
+app.use('/api/upload', protect, Uploadrouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/requests', watchRequestsRouter);
 app.use('/api/push', pushRouter);

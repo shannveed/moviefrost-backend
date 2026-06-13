@@ -41,6 +41,12 @@ import {
 import { syncTmdbCreditsAdmin } from '../Controllers/TmdbController.js';
 import { searchMoviesAndTmdb } from '../Controllers/TmdbSearchController.js';
 
+import {
+  getMovieByIdReadOnly,
+  getMovieByIdAdminReadOnly,
+  recordMovieView,
+} from '../Controllers/MovieReadController.js';
+
 const router = express.Router();
 
 const searchAwarePublicMoviesList = (req, res, next) => {
@@ -55,16 +61,20 @@ const searchAwarePublicMoviesList = (req, res, next) => {
   return moviesController.getMovies(req, res, next);
 };
 
+/* ============================================================
+   Dangerous import route
+   - Disabled in production unless explicitly enabled.
+   - Always admin protected.
+   ============================================================ */
+if (
+  process.env.NODE_ENV !== 'production' ||
+  process.env.ENABLE_MOVIE_IMPORT_ROUTE === 'true'
+) {
+  router.post('/import', protect, admin, moviesController.importMovies);
+}
+
 // * PUBLIC ROUTES *
-router.post('/import', moviesController.importMovies);
-
-// ✅ Search-aware public list:
-// /api/movies?search=red notice now does:
-// local MongoDB first -> TMDb virtual fallback if no local match.
 router.get('/', searchAwarePublicMoviesList);
-
-// Optional explicit endpoint:
-// /api/movies/search?search=red notice
 router.get('/search', searchMoviesAndTmdb);
 
 // Sitemaps
@@ -121,7 +131,8 @@ router.get('/admin/related/:id', protect, admin, getRelatedMoviesAdmin);
 // ADMIN: bulk lookup by exact names
 router.post('/admin/find-by-names', protect, admin, findMoviesByNamesAdmin);
 
-router.get('/admin/:id', protect, admin, moviesController.getMovieByIdAdmin);
+// ADMIN single movie read-only
+router.get('/admin/:id', protect, admin, getMovieByIdAdminReadOnly);
 
 /* ============================================================
    Ratings routes
@@ -134,8 +145,13 @@ router.post('/:id/ratings', protect, upsertMovieRating);
 
 router.delete('/:id/ratings/:ratingId', protect, admin, deleteMovieRatingAdmin);
 
-// PUBLIC single movie
-router.get('/:id', moviesController.getMovieById);
+/* ============================================================
+   Real-user delayed view tracking
+   ============================================================ */
+router.post('/:id/view', recordMovieView);
+
+// PUBLIC single movie read-only
+router.get('/:id', getMovieByIdReadOnly);
 
 // * PRIVATE ROUTES *
 router.post('/:id/reviews', protect, moviesController.createMovieReview);
