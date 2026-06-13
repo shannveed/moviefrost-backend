@@ -39,6 +39,7 @@ import {
 } from '../Controllers/RatingsController.js';
 
 import { syncTmdbCreditsAdmin } from '../Controllers/TmdbController.js';
+import { importTmdbTitleAdmin } from '../Controllers/TmdbImportController.js';
 import { searchMoviesAndTmdb } from '../Controllers/TmdbSearchController.js';
 
 import {
@@ -108,8 +109,11 @@ router.get('/tmdb/virtual/:type/:id', getTmdbVirtualMovie);
 // ADMIN READ ROUTES
 router.get('/admin', protect, admin, moviesController.getMoviesAdmin);
 
-// TMDb
+// TMDb admin utilities
 router.post('/admin/tmdb/sync-credits', protect, admin, syncTmdbCreditsAdmin);
+
+// ✅ NEW: selected TMDb title import into MongoDB
+router.post('/admin/tmdb/import', protect, admin, importTmdbTitleAdmin);
 
 // Admin Latest New list
 router.get(
